@@ -1,4 +1,4 @@
-# Developer Protocol
+# Agent Protocol
 
 **Server:** paleobiology-mcp-server
 **Version:** 0.1.0
@@ -6,6 +6,16 @@
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
 **Zod:** ^4.4.3
+
+> Fossil biodiversity over the Paleobiology Database (PBDB, paleobiodb.org/data1.2) —
+> keyless, CC BY 4.0. Eight `paleobiology_*` tools plus two `paleobiology://` resources:
+> `get_taxon` (name/id → accepted name, rank, classification, FAD/LAD range — the
+> name-resolution gateway), `search_occurrences` (the flagship; large results spill to a
+> DataCanvas, queried via `dataframe_query` / `dataframe_describe`, freed via the
+> opt-in `dataframe_drop`), `get_diversity` (origination/extinction curve through time),
+> `search_collections` (fossil localities), and `list_intervals` (the bundled ICS geologic
+> time scale — offline). No auth, no API key. Domain env vars: `PBDB_BASE_URL`,
+> `PBDB_TIMEOUT_MS`, `PBDB_MAX_OCCURRENCES`, `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED`.
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
@@ -45,55 +55,90 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ### Tool
 
+Real surface — `paleobiology_get_taxon` (trimmed). Handlers stay pure (throw, no
+`try/catch`); the service throws `notFound` on a missing record and the tool remaps it
+to its typed contract reason via `ctx.fail` + `isNotFoundError` (a STRUCTURAL check —
+`err instanceof McpError && err.code === NotFound`, never a string match).
+
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { getPbdbService, isNotFoundError } from '@/services/pbdb/pbdb-service.js';
 
-export const searchItems = tool('search_items', {
-  description: 'Search inventory items by query.',
-  annotations: { readOnlyHint: true },
+export const getTaxonTool = tool('paleobiology_get_taxon', {
+  title: 'paleobiology-mcp-server: get taxon record and fossil range',
+  description: 'Resolve a taxon by name or integer taxon_no to its accepted name, rank, classification, and FAD/LAD range.',
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    query: z.string().describe('Search terms'),
-    limit: z.number().default(10).describe('Max results'),
+    name: z.string().optional().describe('Taxon name to resolve, e.g. "Tyrannosaurus". Provide this or taxon_no.'),
+    taxon_no: z.number().int().positive().optional().describe('PBDB taxon id. Provide this or name.'),
+    show_children: z.boolean().default(false).describe('When true, include immediate child taxa.'),
   }),
-  output: z.object({
-    items: z.array(z.object({
-      id: z.string().describe('Item ID'),
-      name: z.string().describe('Item name'),
-    })).describe('Matching items'),
-  }),
-  auth: ['inventory:read'],
+  output: TaxonOutputSchema,
+  errors: [
+    { reason: 'taxon_not_found', code: JsonRpcErrorCode.NotFound,
+      when: 'The name or taxon_no resolved to no PBDB taxon.',
+      recovery: 'Check the spelling or try a higher rank (genus → family), then retry.' },
+    { reason: 'missing_selector', code: JsonRpcErrorCode.InvalidParams,
+      when: 'Neither name nor taxon_no was provided.',
+      recovery: 'Provide either a taxon name or a positive integer taxon_no.' },
+  ],
 
   async handler(input, ctx) {
-    const items = await findItems(input.query, input.limit);
-    ctx.log.info('Search completed', { query: input.query, count: items.length });
-    return { items };
+    if (!input.name && input.taxon_no == null) {
+      throw ctx.fail('missing_selector', 'Provide either a name or a taxon_no.', { ...ctx.recoveryFor('missing_selector') });
+    }
+    try {
+      return shapeOutput(await getPbdbService().getTaxon(argsFrom(input), ctx));
+    } catch (err) {
+      if (isNotFoundError(err)) {
+        throw ctx.fail('taxon_not_found', `No taxon matched the query.`, { ...ctx.recoveryFor('taxon_not_found') });
+      }
+      throw err; // sanitized upstream errors (no statusCode/responseBody/requestId leak) bubble as-is
+    }
   },
 
   // format() populates content[] — the markdown twin of structuredContent.
   // Different clients read different surfaces (Claude Code → structuredContent,
-  // Claude Desktop → content[]); both must carry the same data.
-  // Enforced at lint time: every field in `output` must appear in the rendered text.
-  format: (result) => [{
-    type: 'text',
-    text: result.items.map(i => `**${i.id}**: ${i.name}`).join('\n'),
-  }],
+  // Claude Desktop → content[]); both must carry the same data. Lint-enforced.
+  format: (result) => [{ type: 'text', text: renderTaxon(result) }],
 });
 ```
 
 ### Resource
 
+Real surface — `paleobiology://taxon/{taxon_no}` (a tool-free mirror of `get_taxon` by id).
+Params are validated in Zod (`.regex()` → JSON-Schema `pattern`, not prose), and the same
+structural `isNotFoundError` remap applies.
+
 ```ts
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { getPbdbService, isNotFoundError } from '@/services/pbdb/pbdb-service.js';
 
-export const itemData = resource('inventory://{itemId}', {
-  description: 'Fetch an inventory item by ID.',
-  params: z.object({ itemId: z.string().describe('Item identifier') }),
-  auth: ['inventory:read'],
+export const taxonResource = resource('paleobiology://taxon/{taxon_no}', {
+  name: 'Taxon record',
+  title: 'paleobiology-mcp-server: taxon record',
+  description: 'Read one taxon by its integer taxon_no — accepted name, rank, classification, FAD/LAD range.',
+  mimeType: 'application/json',
+  params: z.object({
+    taxon_no: z.string().regex(/^\d+$/, 'taxon_no must be a positive integer.').describe('PBDB taxon id (a bare positive integer).'),
+  }),
+  errors: [
+    { reason: 'taxon_not_found', code: JsonRpcErrorCode.NotFound,
+      when: 'No PBDB taxon has the given taxon_no.',
+      recovery: 'Run paleobiology_get_taxon by name to obtain a valid taxon_no, then retry.' },
+  ],
   async handler(params, ctx) {
-    const item = await ctx.state.get(`item:${params.itemId}`);
-    if (!item) throw notFound(`Item ${params.itemId} not found`, { itemId: params.itemId });
-    return item;
+    const taxonNo = Number(params.taxon_no);
+    try {
+      return await getPbdbService().getTaxon({ taxonNo, showChildren: false }, ctx);
+    } catch (err) {
+      if (isNotFoundError(err)) {
+        throw ctx.fail('taxon_not_found', `No taxon with taxon_no ${taxonNo}.`, { ...ctx.recoveryFor('taxon_not_found') });
+      }
+      throw err;
+    }
   },
 });
 ```
@@ -117,29 +162,34 @@ export const reviewCode = prompt('review_code', {
 
 ### Server config
 
+Real surface — PBDB is keyless, so there's no API-key field; the schema is base URL,
+timeout, the occurrence row cap, and the opt-in dataframe-drop flag.
+
 ```ts
 // src/config/server-config.ts — lazy-parsed, separate from framework config
 import { z } from '@cyanheads/mcp-ts-core';
 import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
-  apiKey: z.string().describe('External API key'),
-  maxResults: z.coerce.number().default(100),
-  verboseLogging: z.stringbool().default(false).describe('Enable verbose logging'),
+  pbdbBaseUrl: z.string().url().default('https://paleobiodb.org/data1.2').describe('Base URL for the PBDB REST API (no trailing slash).'),
+  pbdbTimeoutMs: z.coerce.number().int().positive().default(30_000).describe('Per-request timeout in ms for PBDB calls.'),
+  pbdbMaxOccurrences: z.coerce.number().int().positive().default(1000).describe('Hard cap on occurrence rows pulled per call before the canvas spill closes the stream.'),
+  dataframeDropEnabled: z.stringbool().default(false).describe('When true, registers paleobiology_dataframe_drop. Off by default.'),
 });
 
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
 export function getServerConfig() {
   _config ??= parseEnvConfig(ServerConfigSchema, {
-    apiKey: 'MY_API_KEY',
-    maxResults: 'MY_MAX_RESULTS',
-    verboseLogging: 'MY_VERBOSE_LOGGING',
+    pbdbBaseUrl: 'PBDB_BASE_URL',
+    pbdbTimeoutMs: 'PBDB_TIMEOUT_MS',
+    pbdbMaxOccurrences: 'PBDB_MAX_OCCURRENCES',
+    dataframeDropEnabled: 'PALEOBIOLOGY_DATAFRAME_DROP_ENABLED',
   });
   return _config;
 }
 ```
 
-`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`MY_API_KEY`) not the path (`apiKey`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
+`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`PBDB_TIMEOUT_MS`) not the path (`pbdbTimeoutMs`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
 
 For env booleans use `z.stringbool()`, never `z.coerce.boolean()` — `Boolean("false")` is `true`, so a coerced flag can't be disabled through the environment. `z.stringbool()` parses `true/false/1/0/yes/no/on/off` and rejects anything else, so `=false` actually disables.
 
@@ -371,7 +421,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { McpError, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 
 // Server's own code — via path alias
-import { getMyService } from '@/services/my-domain/my-service.js';
+import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
 ```
 
 ---
