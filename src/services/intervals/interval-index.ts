@@ -1,0 +1,79 @@
+/**
+ * @fileoverview In-memory index over the bundled ICS geologic time scale.
+ *
+ * Backs `paleobiology_list_intervals` with no network call and provides the
+ * name↔Ma resolution other services use to echo both temporal representations.
+ * The set is small and bounded (~171 intervals) — a plain index, not a
+ * MirrorService or DataCanvas. Built once at startup via {@link initIntervalIndex}.
+ * @module services/intervals/interval-index
+ */
+
+import type { Interval, IntervalLevel } from '../pbdb/types.js';
+import { ICS_INTERVALS, ICS_VERSION, SNAPSHOT_GENERATED } from './time-scale-data.js';
+
+/** Normalize an interval name for case-insensitive lookup. */
+const norm = (s: string): string => s.trim().toLowerCase();
+
+export class IntervalIndex {
+  private readonly byNameExact = new Map<string, Interval>();
+  private readonly intervals: readonly Interval[];
+
+  constructor(intervals: readonly Interval[]) {
+    this.intervals = intervals;
+    for (const iv of intervals) {
+      this.byNameExact.set(norm(iv.name), iv);
+    }
+  }
+
+  /** The snapshot version string surfaced to consumers (`ICS_VERSION (generated …)`). */
+  get snapshotVersion(): string {
+    return `ICS ${ICS_VERSION} (snapshot generated ${SNAPSHOT_GENERATED})`;
+  }
+
+  /** Exact (case-insensitive) interval lookup by name. */
+  byName(name: string): Interval | undefined {
+    return this.byNameExact.get(norm(name));
+  }
+
+  /**
+   * Filter intervals for the list tool. All filters are ANDed; substring match
+   * on `name`, inclusive Ma overlap for the range, exact `level`.
+   */
+  filter(opts: {
+    name?: string;
+    minMa?: number;
+    maxMa?: number;
+    level?: IntervalLevel;
+  }): Interval[] {
+    const needle = opts.name ? norm(opts.name) : undefined;
+    return this.intervals.filter((iv) => {
+      if (needle && !norm(iv.name).includes(needle)) return false;
+      if (opts.level && iv.level !== opts.level) return false;
+      // Overlap test against [minMa, maxMa] when either bound is supplied.
+      if (opts.minMa != null && iv.max_ma < opts.minMa) return false;
+      if (opts.maxMa != null && iv.min_ma > opts.maxMa) return false;
+      return true;
+    });
+  }
+
+  /** All intervals, optionally restricted to one level. Sorted oldest-first. */
+  all(level?: IntervalLevel): Interval[] {
+    const items = level ? this.intervals.filter((iv) => iv.level === level) : [...this.intervals];
+    return items.sort((a, b) => b.max_ma - a.max_ma);
+  }
+}
+
+let _index: IntervalIndex | undefined;
+
+/** Build the singleton index from the bundled snapshot. Call in setup(). */
+export function initIntervalIndex(): void {
+  _index = new IntervalIndex(ICS_INTERVALS);
+}
+
+/** Resolve the index; throws if not initialized. */
+export function getIntervalIndex(): IntervalIndex {
+  if (!_index) {
+    throw new Error('IntervalIndex not initialized — call initIntervalIndex() in setup()');
+  }
+  return _index;
+}

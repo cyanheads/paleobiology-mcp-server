@@ -39,10 +39,10 @@ ENV NODE_ENV=production
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 ARG APP_VERSION
 LABEL org.opencontainers.image.title="paleobiology-mcp-server"
-LABEL org.opencontainers.image.description=""
+LABEL org.opencontainers.image.description="Fossil biodiversity over the Paleobiology Database — occurrences, taxon ranges, and diversity through deep time."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.version="${APP_VERSION}"
-LABEL org.opencontainers.image.source=""
+LABEL org.opencontainers.image.source="https://github.com/cyanheads/paleobiology-mcp-server"
 
 # Copy dependency manifests
 COPY package.json bun.lock ./
@@ -67,6 +67,14 @@ RUN if [ "$OTEL_ENABLED" = "true" ]; then \
         @opentelemetry/sdk-trace-node \
         @opentelemetry/semantic-conventions; \
     fi
+
+# DataCanvas (Tier 3, optional peer dep): copy the fully-resolved @duckdb tree
+# from the build stage. The production install above runs with --ignore-scripts,
+# which can leave @duckdb/node-api's native bindings unprepared — a server started
+# with CANVAS_PROVIDER_TYPE=duckdb then crashes at runtime. The build stage ran a
+# full install on the same platform base, so its @duckdb (including the platform
+# node-bindings package carrying duckdb.node) is the correct native artifact.
+COPY --from=build /usr/src/app/node_modules/@duckdb ./node_modules/@duckdb
 
 # Copy the compiled application code from the build stage
 COPY --from=build /usr/src/app/dist ./dist

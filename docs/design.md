@@ -208,9 +208,10 @@ interface DiversityBin {
   interval: string;               // bin name (e.g. "Cretaceous")
   max_ma: number; min_ma: number; // bin boundaries
   sampled_in_bin: number;         // dsb — taxa with occurrences inside this bin
-  implied: number;                // dib — range-through taxa (implied present, no occurrences in bin)
-  originations: number;           // xft — taxa first appearing in this bin (bottom boundary crossers / new FADs)
-  extinctions: number;            // xfl — taxa last appearing in this bin (top boundary crossers / LADs)
+  implied: number;                // dib — taxa implied present in the bin but without an occurrence in it
+  originations: number;           // X_Ft + X_FL — taxa first appearing in this bin (new FADs + bin-only singletons)
+  extinctions: number;            // X_bL + X_FL — taxa last appearing in this bin (LADs + bin-only singletons)
+  range_through: number;          // X_bt — taxa whose range crosses both bin boundaries (present before and after)
   n_occurrences: number;          // noc — total occurrence count in bin
 }
 

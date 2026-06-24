@@ -1,25 +1,25 @@
 {
   "name": "paleobiology-mcp-server",
   "version": "0.1.0",
-  "description": "",
+  "description": "Fossil biodiversity over the Paleobiology Database — occurrences, taxon ranges, and diversity through 540 million years of deep time.",
   "author": {
-    "name": "",
-    "email": "",
-    "url": ""
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
   },
-  "homepage": "",
-  "repository": "",
+  "homepage": "https://github.com/cyanheads/paleobiology-mcp-server",
+  "repository": "https://github.com/cyanheads/paleobiology-mcp-server",
   "license": "Apache-2.0",
-  "keywords": ["mcp", "mcp-server", "model-context-protocol"],
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "paleobiology", "fossils", "pbdb"],
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "paleobiology-mcp-server",
-    "shortDescription": "",
-    "longDescription": "",
-    "developerName": "",
-    "category": "",
+    "shortDescription": "Fossil biodiversity over the Paleobiology Database — occurrences, taxon ranges, and diversity through deep time.",
+    "longDescription": "Query the Paleobiology Database (PBDB) for fossil occurrences, taxon fossil ranges, diversity through geologic time, the geologic time scale, and fossil localities. Keyless, CC BY. Surfaces both modern and paleo coordinates and translates named geologic intervals to absolute ages.",
+    "developerName": "cyanheads",
+    "category": "data",
     "capabilities": ["Read"],
-    "websiteURL": "",
+    "websiteURL": "https://github.com/cyanheads/paleobiology-mcp-server",
     "defaultPrompt": []
   }
 }
