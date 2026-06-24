@@ -1,0 +1,9 @@
+{
+  "paleobiology-mcp-server": {
+    "command": "npx",
+    "args": ["-y", "paleobiology-mcp-server"],
+    "env": {
+      "MCP_TRANSPORT_TYPE": "stdio"
+    }
+  }
+}
