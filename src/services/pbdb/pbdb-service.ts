@@ -392,7 +392,11 @@ export function normalizeTaxon(r: PbdbTaxonRecord): Taxon {
     },
   };
   if (r.accepted_name) t.accepted_name = r.accepted_name;
-  if (r.taxon_rank) t.rank = r.taxon_rank;
+  // PBDB populates `taxon_rank` on a by-name lookup but leaves it null on a
+  // by-id lookup, where the rank lives in `accepted_rank` — fall back to it so
+  // get_taxon by taxon_no and the taxon resource surface the rank either way.
+  const rank = r.taxon_rank || r.accepted_rank;
+  if (rank) t.rank = rank;
   const parentNo = intId(r.parent_no);
   if (parentNo != null) t.parent_no = parentNo;
   if (r.parent_name) t.parent_name = r.parent_name;

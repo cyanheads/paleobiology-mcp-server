@@ -122,6 +122,21 @@ describe('normalizeTaxon', () => {
     });
   });
 
+  it('falls back to accepted_rank when taxon_rank is null (the by-id lookup shape)', () => {
+    // A by-id PBDB lookup (taxa/single?id=txn:NNN) returns taxon_rank: null and
+    // carries the rank in accepted_rank instead — the by-name shape populates
+    // taxon_rank. Without the fallback, get_taxon by taxon_no and the taxon
+    // resource drop the rank entirely.
+    const raw: PbdbTaxonRecord = {
+      taxon_no: '38613',
+      accepted_name: 'Tyrannosaurus',
+      accepted_rank: 'genus',
+      is_extant: 'extinct',
+    };
+    const t = normalizeTaxon(raw);
+    expect(t.rank).toBe('genus');
+  });
+
   it('marks an extant clade and tolerates a missing appearance window', () => {
     const raw: PbdbTaxonRecord = {
       taxon_no: '36651',

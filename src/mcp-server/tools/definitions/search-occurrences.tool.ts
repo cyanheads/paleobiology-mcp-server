@@ -275,11 +275,15 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     }
 
     const instance = await canvas.acquire(input.canvas_id, ctx);
+    // The canvas id uses nanoid's URL-safe alphabet, which includes "-" — invalid
+    // in an unquoted SQL identifier (the canvas rejects it). Map non-identifier
+    // chars to "_" so the table name is always a legal identifier.
+    const tableName = `occurrences_${instance.canvasId.replace(/[^A-Za-z0-9_]/g, '_')}`;
     const result = await spillover({
       canvas: instance,
       source: service.searchOccurrences(filter, ctx),
       previewChars: 100_000, // ≈25k tokens inline
-      tableName: `occurrences_${instance.canvasId}`,
+      tableName,
       signal: ctx.signal,
     });
 

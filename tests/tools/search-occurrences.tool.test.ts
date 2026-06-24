@@ -222,6 +222,28 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
     expect(String(getEnrichment(ctx).notice)).toMatch(/paleobiology_dataframe_query/);
   });
 
+  it('sanitizes a hyphenated canvas id into a legal SQL table identifier', async () => {
+    // The canvas mints ids from nanoid's URL-safe alphabet, which includes "-".
+    // A raw `occurrences_<id>` table name with a hyphen is an illegal SQL
+    // identifier and the canvas rejects it — the id portion must be sanitized.
+    const big = Array.from({ length: 400 }, (_, i) => ({
+      ...tRex,
+      occurrence_no: i + 1,
+      formation: 'X'.repeat(300),
+    }));
+    stubRows(big);
+    const instance = makeFakeInstance('a-VBpZv9G');
+    getCanvas.mockReturnValue({ acquire: vi.fn().mockResolvedValue(instance) });
+
+    const ctx = createMockContext();
+    const input = searchOccurrencesTool.input.parse({ base_name: 'Dinosauria', limit: 500 });
+    const result = await searchOccurrencesTool.handler(input, ctx);
+
+    expect(result.spilled).toBe(true);
+    expect(result.table_name).toBe('occurrences_a_VBpZv9G');
+    expect(result.table_name).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/);
+  });
+
   it('reuses an explicit canvas_id passed by the caller', async () => {
     stubRows([tRex]);
     const acquire = vi.fn().mockResolvedValue(makeFakeInstance('reusedId03'));
