@@ -219,7 +219,7 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       .string()
       .optional()
       .describe(
-        'Canvas id from a prior call to reuse the same workspace. Omit to start fresh — the response returns a new one.',
+        'Canvas id from a prior call to re-stage onto the same workspace. Reusing it REPLACES (overwrites) the prior occurrence table — each search restages the full result, it does not append to or accumulate across earlier ones. Omit to start fresh; the response returns a new id.',
       ),
   }),
   output: SearchOccurrencesOutputSchema,

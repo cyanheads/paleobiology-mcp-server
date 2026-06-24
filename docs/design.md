@@ -25,7 +25,7 @@ and when life existed across ~540 million years. Keyless, CC BY.
 | `paleobiology_dataframe_describe` | List the tables and columns staged on a canvas — discover names before writing SQL for `paleobiology_dataframe_query`. | `true` | `false` | `canvas_id` | `{ tables[{ name, kind, row_count, columns[] }] }` |
 | `paleobiology_dataframe_drop` | Drop a staged table from a canvas to free memory before its TTL expires. Opt-in — registered only when `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true`. | `false` | `false` | `canvas_id`, `table_name` | `{ dropped }` |
 
-Tool counts: **7–8 tools** — 5 domain/workflow tools (the idea.md sketch) + the standardized
+Tool counts: **7–8 tools** — 5 domain/workflow tools + the standardized
 3-tool DataCanvas set, of which 2 always register and 1 is opt-in. Exactly **one** domain tool
 spills to a canvas: `paleobiology_search_occurrences` (occurrence rows are tabular and
 analytical — count by interval, group by formation/country/lithology over large broad-query
@@ -453,6 +453,12 @@ a reconciliation surfaced as the `identified_name` vs `accepted_name` split.
   (occurrence rows vary widely). Target ≈25k tokens inline (`previewChars: 100_000`).
   `paleobiology_get_diversity` returns its full bin set inline (bounded); `paleobiology_search_collections`
   pages inline.
+- **Canvas reuse replaces, never accumulates.** The staged table name is deterministic per
+  canvas (`occurrences_<canvasId>`), and the framework's `registerTable` drops the table before
+  recreating it. So passing a prior `canvas_id` back into `paleobiology_search_occurrences`
+  **overwrites** that canvas's occurrence table with the new result — each search restages the
+  full set, it does not append across calls. The `canvas_id` `.describe()` states this so an
+  agent doesn't expect the workspace to grow by re-querying.
 - **Truncation disclosure.** When `paleobiology_search_occurrences` hits its cap without
   spilling (canvas disabled), or when `paleobiology_search_collections` pages past its inline
   `limit`, the handler discloses via `ctx.enrich.truncated({ shown, cap })` and

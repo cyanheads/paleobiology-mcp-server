@@ -2,8 +2,8 @@
   "manifest_version": "0.3",
   "name": "paleobiology-mcp-server",
   "version": "0.1.0",
-  "description": "",
-  "author": { "name": "" },
+  "description": "Fossil biodiversity over the Paleobiology Database — occurrences, taxon ranges, and diversity through 540 million years of deep time.",
+  "author": { "name": "cyanheads", "url": "https://github.com/cyanheads" },
   "server": {
     "type": "node",
     "entry_point": "dist/index.js",

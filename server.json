@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "cyanheads/paleobiology-mcp-server",
+  "name": "io.github.cyanheads/paleobiology-mcp-server",
   "description": "Fossil occurrences, taxon ranges, and diversity through deep time over the Paleobiology Database.",
   "repository": {
     "url": "https://github.com/cyanheads/paleobiology-mcp-server",
