@@ -9,6 +9,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getPbdbService, isNotFoundError } from '@/services/pbdb/pbdb-service.js';
+import type { Taxon } from '@/services/pbdb/types.js';
 
 const ClassificationSchema = z
   .object({
@@ -146,7 +147,7 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
     if (input.name) args.name = input.name;
     if (input.taxon_no != null) args.taxonNo = input.taxon_no;
 
-    let taxon: Awaited<ReturnType<ReturnType<typeof getPbdbService>['getTaxon']>>;
+    let taxon: Taxon;
     try {
       taxon = await getPbdbService().getTaxon(args, ctx);
     } catch (err) {
