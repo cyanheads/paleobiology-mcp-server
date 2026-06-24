@@ -17,8 +17,12 @@
  *    stage/age level); `period`/`epoch` pass through.
  *  - A not-found lookup returns HTTP 400 (invalid/unmatched taxon name) or 404
  *    (unknown id), each with an `errors[]` body — reclassified to a clean
- *    NotFound in {@link reclassifyPbdbHttpError}; some 200+`errors[]` cases are
+ *    NotFound in {@link sanitizeUpstreamError}; some 200+`errors[]` cases are
  *    caught in {@link parseEnvelope}. Both surface as the caller's typed not-found.
+ *    Every other upstream failure (403/429/5xx/timeout/network) is also routed
+ *    through {@link sanitizeUpstreamError}, which strips the raw upstream plumbing
+ *    (statusCode/responseBody/requestId/URL) the framework would otherwise forward
+ *    to the client, re-minting a same-code error with leak-free `data`.
  * @module services/pbdb/pbdb-service
  */
 
@@ -139,15 +143,17 @@ export class PbdbService {
         try {
           response = await fetchWithTimeout(url, this.timeoutMs, reqCtx, { signal: ctx.signal });
         } catch (err) {
-          // PBDB answers a not-found / invalid-input lookup with HTTP 400 or 404
-          // and a JSON body carrying `errors[]`. fetchWithTimeout throws those as
-          // status-mapped McpErrors before we see the body — reclassify a 4xx whose
-          // captured body reads as a PBDB not-found into a clean NotFound, so the
-          // tool can map it to its typed contract reason (and we don't leak the raw
-          // upstream status / requestId to the agent). 5xx and timeouts bubble for retry.
-          const reclassified = reclassifyPbdbHttpError(err, operation);
-          if (reclassified) throw reclassified;
-          throw err;
+          // fetchWithTimeout throws a status-mapped McpError on every non-2xx, plus
+          // a Timeout/ServiceUnavailable/InternalError on timeout / network / abort.
+          // Each of those carries the raw upstream plumbing in `data` (statusCode,
+          // statusText, responseBody, requestId, operation) and the fetched URL in
+          // its message — all of which the framework forwards verbatim to the client
+          // on a public server. Sanitize EVERY upstream McpError into a clean typed
+          // domain error (PBDB's 400/404 not-found → NotFound the tool can remap;
+          // everything else → same code, leak-free `data`, original kept as `cause`),
+          // so nothing internal escapes. Transient codes are preserved, so withRetry
+          // still backs off on 5xx / rate-limit / timeout.
+          throw sanitizeUpstreamError(err, operation);
         }
         const text = await response.text();
         return this.parseEnvelope<T>(text, operation);
@@ -505,36 +511,91 @@ function unquote(s: string | undefined): string | undefined {
   return trimmed || undefined;
 }
 
-/**
- * Reclassify a 4xx McpError from {@link fetchWithTimeout} into a clean NotFound
- * when PBDB's captured response body reads as a not-found / invalid-lookup error.
- * Returns undefined for anything that should bubble unchanged (5xx, timeouts,
- * non-PBDB shapes). Reads `data.statusCode` + `data.responseBody` that
- * fetchWithTimeout attaches to the thrown error.
- */
-function reclassifyPbdbHttpError(err: unknown, operation: string): McpError | undefined {
-  if (typeof err !== 'object' || err === null || !('data' in err)) return;
-  const data = (err as { data?: unknown }).data;
-  if (typeof data !== 'object' || data === null) return;
-  const statusCode = (data as { statusCode?: unknown }).statusCode;
-  if (statusCode !== 400 && statusCode !== 404) return;
-
-  const responseBody = (data as { responseBody?: unknown }).responseBody;
-  let pbdbErrors: string[] | undefined;
-  if (typeof responseBody === 'string') {
-    try {
-      const parsed = JSON.parse(responseBody) as { errors?: unknown };
-      if (Array.isArray(parsed.errors)) {
-        pbdbErrors = parsed.errors.filter((e): e is string => typeof e === 'string');
-      }
-    } catch {
-      // Non-JSON body — fall through to the generic message below.
-    }
+/** Human-facing label for a sanitized upstream failure, keyed by error code. */
+function upstreamConditionFor(code: JsonRpcErrorCode): string {
+  switch (code) {
+    case JsonRpcErrorCode.Timeout:
+      return 'timed out';
+    case JsonRpcErrorCode.RateLimited:
+      return 'is rate-limiting requests';
+    case JsonRpcErrorCode.Forbidden:
+    case JsonRpcErrorCode.Unauthorized:
+      return 'refused the request';
+    default:
+      return 'is unavailable';
   }
-  const message = pbdbErrors?.length
-    ? pbdbErrors.join('; ')
-    : `PBDB found no match during ${operation}.`;
-  return notFound(message, { reason: 'pbdb_not_found' });
+}
+
+/**
+ * Sanitize an error thrown by {@link fetchWithTimeout} into a clean, typed domain
+ * error that leaks none of the raw upstream plumbing.
+ *
+ * Detection is STRUCTURAL — `err instanceof McpError` + its `.code`/`.data`, never
+ * a string match on the message. Two outcomes:
+ *  - PBDB not-found: a `NotFound`-coded error (HTTP 404 → unknown id) or a 400-class
+ *    error (`InvalidParams`/`ValidationError` → unmatched name) whose captured
+ *    `responseBody` reads as a PBDB `errors[]` body → a clean {@link notFound} the
+ *    caller remaps to its typed contract reason. PBDB's own error text is preserved
+ *    in the message; the raw `data` (statusCode/statusText/responseBody/requestId)
+ *    is dropped, replaced by `{ reason: 'pbdb_not_found' }`.
+ *  - Anything else (403/429/5xx/timeout/network): a freshly-minted McpError of the
+ *    SAME code (so withRetry's transient classification is preserved) with a
+ *    generic, operation-scoped message and leak-free `data` (`{ operation }` only —
+ *    no statusCode/responseBody/requestId/URL). The original is attached as `cause`
+ *    for server-side logging, never serialized to the client.
+ *
+ * A non-McpError (not expected from fetchWithTimeout) bubbles unchanged — the
+ * framework classifies it to code+message only, with no `data` to leak.
+ */
+function sanitizeUpstreamError(err: unknown, operation: string): unknown {
+  if (!(err instanceof McpError)) return err;
+
+  if (err.code === JsonRpcErrorCode.NotFound || isPbdbNotFoundBody(err)) {
+    return notFound(pbdbNotFoundMessage(err, operation), { reason: 'pbdb_not_found' });
+  }
+
+  return new McpError(
+    err.code,
+    `PBDB ${upstreamConditionFor(err.code)} during ${operation}.`,
+    { operation },
+    { cause: err },
+  );
+}
+
+/**
+ * True when a 400-class McpError's captured `responseBody` is a PBDB JSON body
+ * carrying a non-empty `errors[]` array — PBDB's signal for an unmatched/invalid
+ * lookup. Structural: gated on the `InvalidParams`/`ValidationError` codes the
+ * framework maps HTTP 400/422 to, then parses the body.
+ */
+function isPbdbNotFoundBody(err: McpError): boolean {
+  if (
+    err.code !== JsonRpcErrorCode.InvalidParams &&
+    err.code !== JsonRpcErrorCode.ValidationError
+  ) {
+    return false;
+  }
+  return pbdbErrorStrings(err).length > 0;
+}
+
+/** The not-found message: PBDB's own error text when present, else a generic one. */
+function pbdbNotFoundMessage(err: McpError, operation: string): string {
+  const errors = pbdbErrorStrings(err);
+  return errors.length > 0 ? errors.join('; ') : `PBDB found no match during ${operation}.`;
+}
+
+/** Extract PBDB's `errors[]` strings from a captured `data.responseBody`, or `[]`. */
+function pbdbErrorStrings(err: McpError): string[] {
+  const responseBody = (err.data as { responseBody?: unknown } | undefined)?.responseBody;
+  if (typeof responseBody !== 'string') return [];
+  try {
+    const parsed = JSON.parse(responseBody) as { errors?: unknown };
+    return Array.isArray(parsed.errors)
+      ? parsed.errors.filter((e): e is string => typeof e === 'string')
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
