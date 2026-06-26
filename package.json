@@ -1,7 +1,8 @@
 {
-  "name": "paleobiology-mcp-server",
+  "name": "@cyanheads/paleobiology-mcp-server",
   "version": "0.1.0",
-  "description": "Fossil biodiversity over the Paleobiology Database — occurrences, taxon ranges, and diversity through 540 million years of deep time.",
+  "mcpName": "io.github.cyanheads/paleobiology-mcp-server",
+  "description": "Search fossil occurrences, resolve taxon fossil ranges, plot diversity through deep time, and look up the geologic time scale via MCP. STDIO or Streamable HTTP.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -39,12 +40,44 @@
     "start:stdio": "MCP_TRANSPORT_TYPE=stdio node dist/index.js",
     "start:http": "MCP_TRANSPORT_TYPE=http node dist/index.js"
   },
-  "keywords": ["mcp", "mcp-server", "model-context-protocol"],
+  "keywords": [
+    "paleobiology",
+    "paleontology",
+    "fossils",
+    "pbdb",
+    "biodiversity",
+    "geologic-time",
+    "deep-time",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http",
+    "ai-agent"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/cyanheads/paleobiology-mcp-server.git"
   },
+  "bugs": {
+    "url": "https://github.com/cyanheads/paleobiology-mcp-server/issues"
+  },
+  "homepage": "https://github.com/cyanheads/paleobiology-mcp-server#readme",
+  "author": "cyanheads <casey@caseyjhand.com> (https://github.com/cyanheads/paleobiology-mcp-server#readme)",
+  "funding": [
+    {
+      "type": "github",
+      "url": "https://github.com/sponsors/cyanheads"
+    },
+    {
+      "type": "buy_me_a_coffee",
+      "url": "https://www.buymeacoffee.com/cyanheads"
+    }
+  ],
   "license": "Apache-2.0",
+  "packageManager": "bun@1.3.11",
   "engines": {
     "bun": ">=1.3.0",
     "node": ">=24.0.0"
@@ -60,7 +93,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.1",
-    "@types/node": "^26.0.0",
+    "@types/node": "^26.0.1",
     "depcheck": "^1.4.7",
     "ignore": "^7.0.5",
     "tsc-alias": "^1.8.17",

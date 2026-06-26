@@ -1,7 +1,7 @@
 {
   "name": "paleobiology-mcp-server",
   "version": "0.1.0",
-  "description": "Fossil biodiversity over the Paleobiology Database — occurrences, taxon ranges, and diversity through 540 million years of deep time.",
+  "description": "Search fossil occurrences, taxon ranges, diversity through deep time, and the geologic time scale.",
   "author": {
     "name": "cyanheads"
   },
@@ -11,7 +11,7 @@
   "mcpServers": {
     "paleobiology-mcp-server": {
       "command": "npx",
-      "args": ["-y", "paleobiology-mcp-server"],
+      "args": ["-y", "@cyanheads/paleobiology-mcp-server"],
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio"
       }

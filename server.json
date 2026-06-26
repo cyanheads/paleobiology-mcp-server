@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.cyanheads/paleobiology-mcp-server",
-  "description": "Fossil occurrences, taxon ranges, and diversity through deep time over the Paleobiology Database.",
+  "description": "Search fossil occurrences, taxon ranges, diversity through deep time, and the geologic time scale.",
   "repository": {
     "url": "https://github.com/cyanheads/paleobiology-mcp-server",
     "source": "github"
@@ -11,8 +11,8 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "paleobiology-mcp-server",
-      "runtimeHint": "node",
+      "identifier": "@cyanheads/paleobiology-mcp-server",
+      "runtimeHint": "bun",
       "version": "0.1.0",
       "packageArguments": [
         {
@@ -40,8 +40,8 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "paleobiology-mcp-server",
-      "runtimeHint": "node",
+      "identifier": "@cyanheads/paleobiology-mcp-server",
+      "runtimeHint": "bun",
       "version": "0.1.0",
       "packageArguments": [
         {
