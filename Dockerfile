@@ -39,7 +39,7 @@ ENV NODE_ENV=production
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 ARG APP_VERSION
 LABEL org.opencontainers.image.title="paleobiology-mcp-server"
-LABEL org.opencontainers.image.description="Fossil biodiversity over the Paleobiology Database — occurrences, taxon ranges, and diversity through deep time."
+LABEL org.opencontainers.image.description="Search fossil occurrences, taxon ranges, diversity through deep time, and the geologic time scale."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.version="${APP_VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/cyanheads/paleobiology-mcp-server"

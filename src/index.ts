@@ -19,7 +19,6 @@ import { initPbdbService } from './services/pbdb/pbdb-service.js';
 await createApp({
   name: 'paleobiology-mcp-server',
   title: 'paleobiology-mcp-server',
-  websiteUrl: 'https://github.com/cyanheads/paleobiology-mcp-server',
   tools: allToolDefinitions,
   resources: allResourceDefinitions,
   instructions:

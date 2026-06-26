@@ -1,7 +1,7 @@
 {
   "name": "paleobiology-mcp-server",
   "version": "0.1.0",
-  "description": "Fossil biodiversity over the Paleobiology Database — occurrences, taxon ranges, and diversity through 540 million years of deep time.",
+  "description": "Search fossil occurrences, taxon ranges, diversity through deep time, and the geologic time scale.",
   "author": {
     "name": "cyanheads",
     "email": "casey@caseyjhand.com",
@@ -14,8 +14,8 @@
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "paleobiology-mcp-server",
-    "shortDescription": "Fossil biodiversity over the Paleobiology Database — occurrences, taxon ranges, and diversity through deep time.",
-    "longDescription": "Query the Paleobiology Database (PBDB) for fossil occurrences, taxon fossil ranges, diversity through geologic time, the geologic time scale, and fossil localities. Keyless, CC BY. Surfaces both modern and paleo coordinates and translates named geologic intervals to absolute ages.",
+    "shortDescription": "Search fossil occurrences, taxon ranges, diversity through deep time, and the geologic time scale.",
+    "longDescription": "Search fossil occurrences, resolve taxon fossil ranges, plot diversity through deep time, and look up the geologic time scale via MCP. STDIO or Streamable HTTP.",
     "developerName": "cyanheads",
     "category": "data",
     "capabilities": ["Read"],
