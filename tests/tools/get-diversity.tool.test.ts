@@ -1,9 +1,10 @@
 /**
  * @fileoverview Handler tests for paleobiology_get_diversity. Covers the happy
- * path (full bin set inline), the required-field-on-empty regression (a
- * zero-bin result must still return { bins: [] } that validates and carries an
- * actionable notice), the filter → service mapping, and format() parity for
- * both populated and empty results.
+ * path (full bin set inline), the oldest-first reordering of PBDB's native
+ * newest-first bins (structuredContent + content[]), the required-field-on-empty
+ * regression (a zero-bin result must still return { bins: [] } that validates and
+ * carries an actionable notice), the filter → service mapping, and format()
+ * parity for both populated and empty results.
  *
  * The PBDB layer is never hit: getPbdbService().getDiversity is a per-test fake.
  * @module tests/tools/get-diversity.tool
@@ -34,6 +35,30 @@ const cretaceousBin: DiversityBin = {
   n_occurrences: 16198,
 };
 
+const jurassicBin: DiversityBin = {
+  interval: 'Jurassic',
+  max_ma: 201.4,
+  min_ma: 143.1,
+  sampled_in_bin: 220,
+  implied: 30,
+  originations: 180,
+  extinctions: 160,
+  range_through: 40,
+  n_occurrences: 1200,
+};
+
+const triassicBin: DiversityBin = {
+  interval: 'Triassic',
+  max_ma: 251.902,
+  min_ma: 201.4,
+  sampled_in_bin: 60,
+  implied: 5,
+  originations: 55,
+  extinctions: 40,
+  range_through: 10,
+  n_occurrences: 300,
+};
+
 describe('paleobiology_get_diversity', () => {
   beforeEach(() => {
     getDiversity.mockReset();
@@ -49,6 +74,24 @@ describe('paleobiology_get_diversity', () => {
     expect(result.bins).toHaveLength(1);
     expect(result.bins[0]).toMatchObject({ interval: 'Cretaceous', originations: 1276 });
     expect(getEnrichment(ctx)).toMatchObject({ totalCount: 1 });
+  });
+
+  it('reorders PBDB newest-first bins to oldest-first (Triassic → Jurassic → Cretaceous)', async () => {
+    // PBDB returns the Mesozoic newest-first; the handler flips it to oldest-first
+    // so structuredContent.bins matches the schema's documented order.
+    getDiversity.mockResolvedValue([cretaceousBin, jurassicBin, triassicBin]);
+    const ctx = createMockContext();
+    const input = getDiversityTool.input.parse({ base_name: 'Dinosauria', interval: 'Mesozoic' });
+    const result = await getDiversityTool.handler(input, ctx);
+
+    expect(result).toEqual(expect.schemaMatching(getDiversityTool.output));
+    expect(result.bins.map((b) => b.interval)).toEqual(['Triassic', 'Jurassic', 'Cretaceous']);
+    // max_ma strictly descending — oldest interval (highest max_ma) first.
+    expect(result.bins.map((b) => b.max_ma)).toEqual([251.902, 201.4, 143.1]);
+    // format() renders the same oldest-first order in content[].
+    const text = renderText(getDiversityTool.format?.(result));
+    expect(text.indexOf('Triassic')).toBeLessThan(text.indexOf('Jurassic'));
+    expect(text.indexOf('Jurassic')).toBeLessThan(text.indexOf('Cretaceous'));
   });
 
   it('applies count/resolution defaults and forwards span filters to the service', async () => {

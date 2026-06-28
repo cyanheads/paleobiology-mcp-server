@@ -7,7 +7,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import { getPbdbService, isNotFoundError } from '@/services/pbdb/pbdb-service.js';
 import type { Taxon } from '@/services/pbdb/types.js';
 
@@ -58,11 +58,8 @@ const ChildSchema = z
 
 const TaxonOutputSchema = z.object({
   taxon_no: z.number().int().describe('Accepted PBDB taxon id — the canonical id for this taxon.'),
-  accepted_name: z
-    .string()
-    .optional()
-    .describe('PBDB accepted name (may differ from the searched name).'),
-  rank: z.string().optional().describe('Taxonomic rank, e.g. "genus", "family", "order".'),
+  accepted_name: z.string().describe('PBDB accepted name (may differ from the searched name).'),
+  rank: z.string().describe('Taxonomic rank, e.g. "genus", "family", "order".'),
   parent_no: z
     .number()
     .int()
@@ -84,6 +81,41 @@ const TaxonOutputSchema = z.object({
     .optional()
     .describe('Immediate child taxa — present only when show_children was true.'),
 });
+
+/** The shaped taxon contract both paleobiology_get_taxon and the taxon resource return. */
+export type TaxonOutput = z.infer<typeof TaxonOutputSchema>;
+
+/**
+ * Shape a service-layer {@link Taxon} into the {@link TaxonOutputSchema} contract:
+ * the FAD/LAD windows lifted to the top level, absent optional fields dropped.
+ * The single source of taxon shaping for both paleobiology_get_taxon and the
+ * paleobiology://taxon/{taxon_no} resource, so the two surfaces cannot drift.
+ *
+ * accepted_name and rank are required outputs — PBDB returns both for every
+ * resolved taxon (rank via taxon_rank, or accepted_rank on a by-id lookup), so a
+ * record missing either is unusable; fail loud rather than fabricate them.
+ */
+export function shapeTaxon(taxon: Taxon): TaxonOutput {
+  if (!taxon.accepted_name || !taxon.rank) {
+    throw serviceUnavailable(
+      `PBDB returned taxon ${taxon.taxon_no} without an accepted name or rank.`,
+    );
+  }
+  const out: TaxonOutput = {
+    taxon_no: taxon.taxon_no,
+    accepted_name: taxon.accepted_name,
+    rank: taxon.rank,
+    classification: taxon.classification,
+    extant: taxon.extant,
+    first_appearance: taxon.range.first_appearance,
+    last_appearance: taxon.range.last_appearance,
+  };
+  if (taxon.parent_no != null) out.parent_no = taxon.parent_no;
+  if (taxon.parent_name) out.parent_name = taxon.parent_name;
+  if (taxon.occurrence_count != null) out.occurrence_count = taxon.occurrence_count;
+  if (taxon.children) out.children = taxon.children;
+  return out;
+}
 
 export const getTaxonTool = tool('paleobiology_get_taxon', {
   title: 'paleobiology-mcp-server: get taxon record and fossil range',
@@ -166,29 +198,17 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
     }
 
     ctx.log.info('Taxon resolved', { taxon_no: taxon.taxon_no, name: taxon.accepted_name });
-
-    const out: z.infer<typeof TaxonOutputSchema> = {
-      taxon_no: taxon.taxon_no,
-      classification: taxon.classification,
-      extant: taxon.extant,
-      first_appearance: taxon.range.first_appearance,
-      last_appearance: taxon.range.last_appearance,
-    };
-    if (taxon.accepted_name) out.accepted_name = taxon.accepted_name;
-    if (taxon.rank) out.rank = taxon.rank;
-    if (taxon.parent_no != null) out.parent_no = taxon.parent_no;
-    if (taxon.parent_name) out.parent_name = taxon.parent_name;
-    if (taxon.occurrence_count != null) out.occurrence_count = taxon.occurrence_count;
-    if (taxon.children) out.children = taxon.children;
-    return out;
+    return shapeTaxon(taxon);
   },
 
   format: (result) => {
     const lines: string[] = [];
-    lines.push(`## ${result.accepted_name ?? `taxon #${result.taxon_no}`}`);
-    const meta = [`**taxon_no:** ${result.taxon_no}`];
-    if (result.rank) meta.push(`**rank:** ${result.rank}`);
-    meta.push(`**extant:** ${result.extant ? 'yes' : 'no (extinct)'}`);
+    lines.push(`## ${result.accepted_name}`);
+    const meta = [
+      `**taxon_no:** ${result.taxon_no}`,
+      `**rank:** ${result.rank}`,
+      `**extant:** ${result.extant ? 'yes' : 'no (extinct)'}`,
+    ];
     if (result.occurrence_count != null) meta.push(`**occurrences:** ${result.occurrence_count}`);
     lines.push(meta.join(' | '));
     if (result.parent_name || result.parent_no != null) {

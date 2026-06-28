@@ -2,8 +2,10 @@
  * @fileoverview Tests for the PBDB response normalizers. Covers the derived-field
  * computation (FAD/LAD windows, origination/extinction sums), string→number
  * coercion, sentinel handling (NO_ORDER_SPECIFIED, quoted lithology/environment),
- * and — critically — sparse payloads (PBDB routinely omits paleo-coords,
- * late_interval, formation). Absent fields must stay absent, never defaulted.
+ * sparse payloads (PBDB routinely omits paleo-coords, late_interval, formation —
+ * absent fields stay absent, never defaulted), and the inverse case: a diversity
+ * bin's interval/max_ma/min_ma are always present, so a record missing them is
+ * rejected rather than emitted temporally anonymous.
  * @module tests/services/pbdb-normalizers
  */
 
@@ -212,6 +214,23 @@ describe('normalizeDiversityBin', () => {
     expect(b.originations).toBe(0);
     expect(b.extinctions).toBe(0);
     expect(b.sampled_in_bin).toBe(0);
+  });
+
+  it('always populates the temporal labels — interval, max_ma, min_ma', () => {
+    const b = normalizeDiversityBin({ interval_name: 'Jurassic', max_ma: 201.4, min_ma: 143.1 });
+    expect(b.interval).toBe('Jurassic');
+    expect(b.max_ma).toBe(201.4);
+    expect(b.min_ma).toBe(143.1);
+  });
+
+  it('rejects a bin missing its interval name or Ma boundaries (unusable record)', () => {
+    // These are required outputs — PBDB labels every bin, so a record without them
+    // is unusable. Fail loud rather than emit a temporally anonymous bin.
+    expect(() => normalizeDiversityBin({ max_ma: 143.1, min_ma: 66 })).toThrow(
+      /interval name or Ma boundaries/,
+    );
+    expect(() => normalizeDiversityBin({ interval_name: 'Cretaceous', min_ma: 66 })).toThrow();
+    expect(() => normalizeDiversityBin({ interval_name: 'Cretaceous', max_ma: 143.1 })).toThrow();
   });
 });
 

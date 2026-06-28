@@ -16,9 +16,9 @@ const RESOLUTIONS = ['period', 'epoch', 'age'] as const;
 
 const BinSchema = z
   .object({
-    interval: z.string().optional().describe('Geologic interval (bin) name, e.g. "Cretaceous".'),
-    max_ma: z.number().optional().describe('Older boundary of the bin in millions of years ago.'),
-    min_ma: z.number().optional().describe('Younger boundary of the bin in millions of years ago.'),
+    interval: z.string().describe('Geologic interval (bin) name, e.g. "Cretaceous".'),
+    max_ma: z.number().describe('Older boundary of the bin in millions of years ago.'),
+    min_ma: z.number().describe('Younger boundary of the bin in millions of years ago.'),
     sampled_in_bin: z.number().describe('Taxa with at least one occurrence inside this bin.'),
     implied: z
       .number()
@@ -87,7 +87,9 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
   output: z.object({
     bins: z
       .array(BinSchema)
-      .describe('Per-interval diversity bins over the span, in PBDB order (oldest-first).'),
+      .describe(
+        'Per-interval diversity bins over the span, ordered oldest-first (oldest geologic interval, highest max_ma, first).',
+      ),
   }),
   enrichment: {
     totalCount: z.number().describe('Number of geologic-interval bins returned.'),
@@ -112,6 +114,9 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     if (input.min_ma != null) filter.minMa = input.min_ma;
 
     const bins = await getPbdbService().getDiversity(filter, ctx);
+    // PBDB returns bins newest-first; present them oldest-first (highest max_ma
+    // first) so the curve reads as a timeline and matches the output schema.
+    bins.sort((a, b) => b.max_ma - a.max_ma);
     ctx.enrich({ attribution: PBDB_ATTRIBUTION });
     ctx.enrich.total(bins.length);
     ctx.log.info('Diversity curve', { base_name: input.base_name, bins: bins.length });
@@ -132,10 +137,10 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     const header =
       '| interval | age (Ma) | sampled | implied | originations | extinctions | range-through | occurrences |';
     const sep = '| --- | --- | --- | --- | --- | --- | --- | --- |';
-    const rows = result.bins.map((b) => {
-      const age = b.max_ma != null && b.min_ma != null ? `${b.max_ma}–${b.min_ma}` : '—';
-      return `| ${b.interval ?? '—'} | ${age} | ${b.sampled_in_bin} | ${b.implied} | ${b.originations} | ${b.extinctions} | ${b.range_through} | ${b.n_occurrences} |`;
-    });
+    const rows = result.bins.map(
+      (b) =>
+        `| ${b.interval} | ${b.max_ma}–${b.min_ma} | ${b.sampled_in_bin} | ${b.implied} | ${b.originations} | ${b.extinctions} | ${b.range_through} | ${b.n_occurrences} |`,
+    );
     return [
       {
         type: 'text',

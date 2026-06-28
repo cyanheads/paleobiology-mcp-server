@@ -8,7 +8,9 @@
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { shapeTaxon } from '@/mcp-server/tools/definitions/get-taxon.tool.js';
 import { getPbdbService, isNotFoundError } from '@/services/pbdb/pbdb-service.js';
+import type { Taxon } from '@/services/pbdb/types.js';
 
 export const taxonResource = resource('paleobiology://taxon/{taxon_no}', {
   name: 'Taxon record',
@@ -36,8 +38,9 @@ export const taxonResource = resource('paleobiology://taxon/{taxon_no}', {
   ],
   async handler(params, ctx) {
     const taxonNo = Number(params.taxon_no);
+    let taxon: Taxon;
     try {
-      return await getPbdbService().getTaxon({ taxonNo, showChildren: false }, ctx);
+      taxon = await getPbdbService().getTaxon({ taxonNo, showChildren: false }, ctx);
     } catch (err) {
       if (isNotFoundError(err)) {
         throw ctx.fail('taxon_not_found', `No taxon with taxon_no ${taxonNo}.`, {
@@ -46,5 +49,8 @@ export const taxonResource = resource('paleobiology://taxon/{taxon_no}', {
       }
       throw err;
     }
+    // Shape through the same helper as paleobiology_get_taxon so this resource is a
+    // true mirror of the tool — FAD/LAD lifted top-level, identical TaxonOutput shape.
+    return shapeTaxon(taxon);
   },
 });

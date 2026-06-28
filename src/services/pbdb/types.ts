@@ -240,13 +240,17 @@ export interface TaxonStub {
   taxon_no: number;
 }
 
-/** One diversity bin (one geologic interval). */
+/**
+ * One diversity bin (one geologic interval). PBDB labels every bin with its
+ * interval name and Ma boundaries — `interval`/`max_ma`/`min_ma` are always
+ * present (the normalizer rejects any bin that omits them), so they're required.
+ */
 export interface DiversityBin {
   extinctions: number; // X_bL + X_FL — taxa whose last occurrence is in this bin
   implied: number;
-  interval?: string;
-  max_ma?: number;
-  min_ma?: number;
+  interval: string;
+  max_ma: number;
+  min_ma: number;
   n_occurrences: number;
   originations: number; // X_Ft + X_FL — taxa whose first occurrence is in this bin
   range_through: number; // X_bt — taxa crossing both boundaries

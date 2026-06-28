@@ -451,7 +451,21 @@ export function normalizeDiversityBin(r: PbdbDiversityRecord): DiversityBin {
   const xBl = num(r.X_bL) ?? 0;
   const xFl = num(r.X_FL) ?? 0;
   const xBt = num(r.X_bt) ?? 0;
-  const b: DiversityBin = {
+  const interval = r.interval_name;
+  const maxMa = num(r.max_ma);
+  const minMa = num(r.min_ma);
+  // PBDB labels every diversity bin with its interval name and Ma boundaries; a
+  // bin missing any of them is an unusable record — fail loud rather than emit a
+  // temporally-anonymous bin the output schema now declares always present.
+  if (!interval || maxMa == null || minMa == null) {
+    throw serviceUnavailable(
+      'PBDB returned a diversity bin without its interval name or Ma boundaries.',
+    );
+  }
+  return {
+    interval,
+    max_ma: maxMa,
+    min_ma: minMa,
     sampled_in_bin: num(r.sampled_in_bin) ?? 0,
     implied: num(r.implied_in_bin) ?? 0,
     originations: xFt + xFl,
@@ -459,12 +473,6 @@ export function normalizeDiversityBin(r: PbdbDiversityRecord): DiversityBin {
     range_through: xBt,
     n_occurrences: num(r.n_occs) ?? 0,
   };
-  if (r.interval_name) b.interval = r.interval_name;
-  const maxMa = num(r.max_ma);
-  if (maxMa != null) b.max_ma = maxMa;
-  const minMa = num(r.min_ma);
-  if (minMa != null) b.min_ma = minMa;
-  return b;
 }
 
 /** Normalize a raw collection record, preserving absence. */

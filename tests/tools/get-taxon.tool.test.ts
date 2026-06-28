@@ -3,7 +3,9 @@
  * both declared error contracts (missing_selector, taxon_not_found), the
  * upstream-4xx → clean-not-found reclassification (asserting NO statusCode /
  * requestId / responseBody leaks onto the agent-facing error), show_children,
- * sparse upstream payloads, format() parity, and output-schema conformance.
+ * sparse upstream payloads, the required-field fail-loud (a taxon missing
+ * accepted_name or rank is rejected, not emitted), format() parity, and
+ * output-schema conformance.
  *
  * The PBDB HTTP layer is never hit: getPbdbService() is mocked to a per-test
  * fake while isNotFoundError() (the real reclassification predicate) is kept
@@ -161,6 +163,24 @@ describe('paleobiology_get_taxon', () => {
     const text = renderText(getTaxonTool.format?.(result));
     expect(text).toContain('age unknown');
     expect(text).toContain('extant:** yes');
+  });
+
+  it('fails loud when PBDB returns a taxon without an accepted name or rank', async () => {
+    // accepted_name and rank are required outputs — a record missing either is
+    // unusable, so the handler throws rather than emit an incomplete taxon.
+    const noRank: Taxon = {
+      taxon_no: 54833,
+      accepted_name: 'Tyrannosaurus',
+      classification: {},
+      extant: false,
+      range: { first_appearance: {}, last_appearance: {} },
+    };
+    getTaxon.mockResolvedValue(noRank);
+    const ctx = createMockContext({ errors: getTaxonTool.errors });
+    const input = getTaxonTool.input.parse({ taxon_no: 54833 });
+    await expect(getTaxonTool.handler(input, ctx)).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ServiceUnavailable,
+    });
   });
 
   it('format() renders ids, classification, and FAD/LAD windows', () => {

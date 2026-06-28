@@ -1,10 +1,11 @@
 /**
  * @fileoverview Tests for the paleobiology://occurrence/{occurrence_no} and
- * paleobiology://taxon/{taxon_no} resources. Covers the happy path, the
- * not-found contract remap (occurrence_not_found / taxon_not_found), the
- * no-leak hardening (a clean typed not-found carries only its reason — never
- * the upstream statusCode/responseBody/requestId), the param regex rejecting
- * non-integer ids, and a non-not-found error bubbling unchanged.
+ * paleobiology://taxon/{taxon_no} resources. Covers the happy path, the taxon
+ * resource mirroring the get_taxon tool exactly (FAD/LAD lifted top-level, no
+ * range{} wrapper), the not-found contract remap (occurrence_not_found /
+ * taxon_not_found), the no-leak hardening (a clean typed not-found carries only
+ * its reason — never the upstream statusCode/responseBody/requestId), the param
+ * regex rejecting non-integer ids, and a non-not-found error bubbling unchanged.
  *
  * getPbdbService() is mocked per-test; isNotFoundError() (the real predicate
  * the resources remap on) stays live via importActual.
@@ -28,6 +29,7 @@ const { occurrenceResource } = await import(
   '@/mcp-server/resources/definitions/occurrence.resource.js'
 );
 const { taxonResource } = await import('@/mcp-server/resources/definitions/taxon.resource.js');
+const { getTaxonTool } = await import('@/mcp-server/tools/definitions/get-taxon.tool.js');
 
 describe('paleobiology://occurrence/{occurrence_no}', () => {
   beforeEach(() => {
@@ -84,25 +86,62 @@ describe('paleobiology://occurrence/{occurrence_no}', () => {
 });
 
 describe('paleobiology://taxon/{taxon_no}', () => {
+  /** A nested-range service taxon — what getTaxon returns before shaping. */
+  function rangedTaxon(): Taxon {
+    return {
+      taxon_no: 54833,
+      accepted_name: 'Tyrannosaurus',
+      rank: 'genus',
+      parent_no: 92294,
+      parent_name: 'Tyrannosaurini',
+      classification: { class: 'Reptilia', family: 'Tyrannosauridae' },
+      extant: false,
+      occurrence_count: 86,
+      range: {
+        first_appearance: { max_ma: 83.6, min_ma: 72.2, interval: 'Campanian' },
+        last_appearance: { max_ma: 72.2, min_ma: 66, interval: 'Maastrichtian' },
+      },
+    };
+  }
+
   beforeEach(() => {
     getTaxon.mockReset();
   });
 
-  it('returns the taxon record for a valid id (no children requested)', async () => {
-    const taxon: Taxon = {
-      taxon_no: 54833,
-      accepted_name: 'Tyrannosaurus',
-      classification: {},
-      extant: false,
-      range: { first_appearance: {}, last_appearance: {} },
-    };
-    getTaxon.mockResolvedValue(taxon);
+  it('lifts FAD/LAD to the top level — never wraps them in a range{} object', async () => {
+    getTaxon.mockResolvedValue(rangedTaxon());
     const ctx = createMockContext({ errors: taxonResource.errors });
     const params = taxonResource.params.parse({ taxon_no: '54833' });
     const result = await taxonResource.handler(params, ctx);
 
-    expect(result).toMatchObject({ taxon_no: 54833, accepted_name: 'Tyrannosaurus' });
+    expect(result).toMatchObject({
+      taxon_no: 54833,
+      accepted_name: 'Tyrannosaurus',
+      rank: 'genus',
+      first_appearance: { max_ma: 83.6, min_ma: 72.2, interval: 'Campanian' },
+      last_appearance: { max_ma: 72.2, min_ma: 66, interval: 'Maastrichtian' },
+    });
+    // Regression for the range{}-wrapping bug: the nested shape must be gone.
+    expect(result).not.toHaveProperty('range');
     expect(getTaxon).toHaveBeenCalledWith({ taxonNo: 54833, showChildren: false }, ctx);
+  });
+
+  it('returns the identical shape to the paleobiology_get_taxon tool (true mirror)', async () => {
+    getTaxon.mockResolvedValue(rangedTaxon());
+
+    const resourceResult = await taxonResource.handler(
+      taxonResource.params.parse({ taxon_no: '54833' }),
+      createMockContext({ errors: taxonResource.errors }),
+    );
+    const toolResult = await getTaxonTool.handler(
+      getTaxonTool.input.parse({ taxon_no: 54833 }),
+      createMockContext({ errors: getTaxonTool.errors }),
+    );
+
+    // Same service taxon → byte-identical contract on both surfaces, both valid
+    // against the tool's TaxonOutputSchema.
+    expect(resourceResult).toEqual(toolResult);
+    expect(resourceResult).toEqual(expect.schemaMatching(getTaxonTool.output));
   });
 
   it('rejects a non-integer taxon_no at the param boundary', () => {
