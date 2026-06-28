@@ -1,6 +1,6 @@
 # paleobiology-mcp-server - Directory Structure
 
-Generated on: 2026-06-28 04:37:12
+Generated on: 2026-06-28 14:10:27
 
 ```text
 paleobiology-mcp-server/
@@ -20,6 +20,7 @@ paleobiology-mcp-server/
 ├── changelog/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
+│   ├── 0.3.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
