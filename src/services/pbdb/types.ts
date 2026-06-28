@@ -295,6 +295,8 @@ export interface Collection {
 /** Filter args for an occurrence search. */
 export interface OccurrenceFilter {
   baseName?: string;
+  /** Restrict to occurrences from a single collection (locality) — PBDB `coll_id`. */
+  collectionNo?: number;
   environment?: EnvironmentFilter;
   interval?: string;
   latmax?: number;

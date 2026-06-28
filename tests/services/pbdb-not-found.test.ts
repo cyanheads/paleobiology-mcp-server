@@ -206,6 +206,14 @@ describe('PbdbService not-found reclassification', () => {
     expect(rows[0]).toMatchObject({ occurrence_no: 139292, accepted_name: 'Tyrannosaurus rex' });
     expect(rows[0]?.lng).toBeCloseTo(-113.0289);
   });
+
+  it('passes coll_id to PBDB when a collection_no filter is set (drilldown)', async () => {
+    fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
+    const ctx = createMockContext();
+    for await (const _ of service.searchOccurrences({ limit: 50, collectionNo: 11917 }, ctx));
+    const url = fetchWithTimeout.mock.calls[0]?.[0] as URL;
+    expect(url.searchParams.get('coll_id')).toBe('11917');
+  });
 });
 
 describe('PbdbService upstream-error sanitization (no leak on non-not-found failures)', () => {

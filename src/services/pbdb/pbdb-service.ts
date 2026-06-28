@@ -210,6 +210,7 @@ export class PbdbService {
       limit: cap,
       base_name: filter.baseName,
       taxon_name: filter.taxonName,
+      coll_id: filter.collectionNo,
       interval: filter.interval,
       max_ma: filter.maxMa,
       min_ma: filter.minMa,

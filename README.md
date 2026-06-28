@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/paleobiology-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/paleobiology-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/paleobiology-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.3.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/paleobiology-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/paleobiology-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/paleobiology-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -44,10 +44,12 @@ Search fossil occurrences filtered by taxon, geologic time, geography, and envir
 
 - `base_name` (a clade and all its descendants) or `taxon_name` (exact) for the taxon filter
 - Age by a named interval (e.g. `Maastrichtian`) or a `max_ma`/`min_ma` range, and/or a lng/lat bounding box
+- `collection_no` scopes the search to a single locality — drill from a `paleobiology_search_collections` row into the fauna found there
 - `environment` enum: `marine`, `terrestrial`, `freshwater`
+- At least one filter (taxon, time, place, environment, or `collection_no`) is required — an unfiltered call is rejected before the upstream request, not reported as PBDB being unavailable
 - Every row carries two distinct coordinate systems — **modern** lng/lat (where the rock is today) and **paleo** lng/lat (where the landmass sat at deposition) — plus formation and age interval
-- Broad queries return many rows: an inline preview answers the immediate question, and the full set stages on a DataCanvas (`canvas_id` + `table_name`) for SQL via `paleobiology_dataframe_query`
-- Reusing a `canvas_id` **replaces** that canvas's occurrence table — each search restages the full result, it does not accumulate across calls
+- Broad queries return many rows: an inline preview answers the immediate question, and the matching occurrences — up to the per-call cap (`limit`, further bounded by `PBDB_MAX_OCCURRENCES`) — stage on a DataCanvas (`canvas_id` + `table_name`) for SQL via `paleobiology_dataframe_query`. The response notice flags when the cap was hit and more may match upstream
+- Reusing a `canvas_id` **replaces** that canvas's occurrence table — each search restages its result, it does not accumulate across calls
 
 ---
 
@@ -77,7 +79,7 @@ Compute a diversity / origination / extinction curve for a clade across geologic
 Find fossil collections (localities) by area and geologic time — "what has been dug up here, and from what rock."
 
 - Each locality returns location, age (named interval and Ma), formation and strata, lithology, depositional environment, and co-occurring-fossils count
-- Filter by `base_name`, a named interval or `max_ma`/`min_ma` range, a lng/lat bounding box, a `formation` or `lithology` name, and/or `environment`
+- Filter by `base_name`, a named interval or `max_ma`/`min_ma` range, a lng/lat bounding box, a `formation` or `lithology` name, and/or `environment` — at least one filter is required (an unfiltered call is rejected before the upstream request)
 - Results page inline via `limit`/`offset`; the response discloses when more remain
 - Take a `collection_no` from a row — or the same bbox+interval — into `paleobiology_search_occurrences` to see the fauna found together
 

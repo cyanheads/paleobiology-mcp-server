@@ -124,7 +124,10 @@ describe('paleobiology_get_diversity', () => {
 
     expect(result).toEqual(expect.schemaMatching(getDiversityTool.output));
     expect(result.bins).toEqual([]);
-    expect(String(getEnrichment(ctx).notice)).toMatch(/No diversity bins for "Nothingium"/);
+    const enr = getEnrichment(ctx);
+    expect(String(enr.notice)).toMatch(/No diversity bins for "Nothingium"/);
+    // #3: notice + attribution are enrichment fields the framework renders into content[].
+    expect(String(enr.attribution)).toMatch(/Paleobiology Database/);
   });
 
   it('format() renders a turnover table for populated bins', () => {

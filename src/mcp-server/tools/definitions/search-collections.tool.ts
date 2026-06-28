@@ -7,6 +7,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
 import type { CollectionFilter, EnvironmentFilter } from '@/services/pbdb/types.js';
 import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
@@ -181,8 +182,25 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
   enrichmentTrailer: {
     attribution: { label: 'Source' },
   },
+  errors: [
+    {
+      reason: 'missing_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'The call carried only pagination fields — no taxon, time, place, formation, lithology, or environment filter.',
+      recovery:
+        'Provide at least one filter: base_name, an interval or max_ma/min_ma range, a lng/lat bounding box, a formation or lithology, or an environment — then retry.',
+    },
+  ],
 
   async handler(input, ctx) {
+    if (!hasCollectionFilter(input)) {
+      throw ctx.fail(
+        'missing_filter',
+        'paleobiology_search_collections needs at least one filter (taxon, geologic time, place, formation, lithology, or environment) — PBDB rejects an unfiltered collection query.',
+        { ...ctx.recoveryFor('missing_filter') },
+      );
+    }
+
     const filter: CollectionFilter = { limit: input.limit, offset: input.offset };
     if (input.base_name) filter.baseName = input.base_name;
     if (input.interval) filter.interval = input.interval;
@@ -259,3 +277,32 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
     return [{ type: 'text', text: lines.join('\n').trim() }];
   },
 });
+
+/** True when the call carries at least one real search selector (not just pagination). */
+function hasCollectionFilter(input: {
+  base_name?: string | undefined;
+  interval?: string | undefined;
+  max_ma?: number | undefined;
+  min_ma?: number | undefined;
+  lngmin?: number | undefined;
+  lngmax?: number | undefined;
+  latmin?: number | undefined;
+  latmax?: number | undefined;
+  formation?: string | undefined;
+  lithology?: string | undefined;
+  environment?: string | undefined;
+}): boolean {
+  return (
+    input.base_name != null ||
+    input.interval != null ||
+    input.max_ma != null ||
+    input.min_ma != null ||
+    input.lngmin != null ||
+    input.lngmax != null ||
+    input.latmin != null ||
+    input.latmax != null ||
+    input.formation != null ||
+    input.lithology != null ||
+    input.environment != null
+  );
+}

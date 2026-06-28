@@ -10,6 +10,7 @@
  * @module tests/tools/search-collections.tool
  */
 
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Collection, CollectionFilter, CollectionResult } from '@/services/pbdb/types.js';
@@ -54,7 +55,7 @@ describe('paleobiology_search_collections', () => {
 
   it('returns localities and conforms to the output schema', async () => {
     searchCollections.mockResolvedValue(result([hellCreek]));
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCollectionsTool.errors });
     const input = searchCollectionsTool.input.parse({ formation: 'Hell Creek' });
     const out = await searchCollectionsTool.handler(input, ctx);
 
@@ -66,7 +67,7 @@ describe('paleobiology_search_collections', () => {
 
   it('returns { collections: [] } (still valid) with a notice on an empty result', async () => {
     searchCollections.mockResolvedValue(result([]));
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCollectionsTool.errors });
     const input = searchCollectionsTool.input.parse({ formation: 'Nonexistent Fm' });
     const out = await searchCollectionsTool.handler(input, ctx);
 
@@ -75,12 +76,27 @@ describe('paleobiology_search_collections', () => {
     const enr = getEnrichment(ctx);
     expect(enr.totalCount).toBe(0);
     expect(String(enr.notice)).toMatch(/No localities matched/);
+    // #3: attribution rides enrichment alongside notice — both reach content[] via the trailer.
+    expect(String(enr.attribution)).toMatch(/Paleobiology Database/);
+  });
+
+  it('rejects an unfiltered call before hitting PBDB (missing_filter)', async () => {
+    const ctx = createMockContext({ errors: searchCollectionsTool.errors });
+    for (const raw of [{}, { limit: 3, offset: 0 }]) {
+      const input = searchCollectionsTool.input.parse(raw);
+      await expect(searchCollectionsTool.handler(input, ctx)).rejects.toMatchObject({
+        code: JsonRpcErrorCode.InvalidParams,
+        data: { reason: 'missing_filter' },
+      });
+    }
+    // PBDB must never be called when no selector was supplied.
+    expect(searchCollections).not.toHaveBeenCalled();
   });
 
   it('discloses truncation (shown/cap) when the page fills to the limit', async () => {
     const rows = Array.from({ length: 2 }, (_, i) => ({ ...hellCreek, collection_no: i + 1 }));
     searchCollections.mockResolvedValue(result(rows, 2, true));
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCollectionsTool.errors });
     const input = searchCollectionsTool.input.parse({ base_name: 'Dinosauria', limit: 2 });
     await searchCollectionsTool.handler(input, ctx);
 
@@ -96,7 +112,7 @@ describe('paleobiology_search_collections', () => {
       captured = filter;
       return result([]);
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCollectionsTool.errors });
     const input = searchCollectionsTool.input.parse({
       base_name: 'Dinosauria',
       interval: 'Maastrichtian',
