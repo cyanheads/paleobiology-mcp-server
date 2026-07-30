@@ -119,6 +119,69 @@ describe('paleobiology_get_diversity', () => {
     });
   });
 
+  it('accepts base_id as the sole clade selector and maps it to the service (#20)', async () => {
+    let captured: DiversityFilter | undefined;
+    getDiversity.mockImplementation(async (filter: DiversityFilter) => {
+      captured = filter;
+      return { bins: [cretaceousBin] };
+    });
+    const ctx = createMockContext({ errors: getDiversityTool.errors });
+    const input = getDiversityTool.input.parse({ base_id: 52775, resolution: 'period' });
+    const out = await getDiversityTool.handler(input, ctx);
+
+    expect(captured).toEqual({ baseId: 52775, count: 'genera', resolution: 'period' });
+    expect(captured).not.toHaveProperty('baseName');
+    expect(out.bins).toHaveLength(1);
+    expect(getEnrichment(ctx).totalCount).toBe(1);
+  });
+
+  it('rejects a call with neither base_name nor base_id (#20, missing_filter)', async () => {
+    // base_name used to be a required input, which made base_id unreachable —
+    // loosening it means this tool needs a missing-filter guard it never had.
+    const ctx = createMockContext({ errors: getDiversityTool.errors });
+    const input = getDiversityTool.input.parse({ resolution: 'epoch' });
+    const err = (await getDiversityTool.handler(input, ctx).catch((e) => e)) as {
+      code: number;
+      message: string;
+      data?: Record<string, unknown>;
+    };
+    expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(err.data?.reason).toBe('missing_filter');
+    expect(err.message).toBe(
+      'paleobiology_get_diversity needs a clade to count — supply base_name or base_id.',
+    );
+    expect(getDiversity).not.toHaveBeenCalled();
+  });
+
+  it('rejects base_name + base_id together at the boundary (#20)', async () => {
+    const ctx = createMockContext({ errors: getDiversityTool.errors });
+    const input = getDiversityTool.input.parse({ base_name: 'Ammonoidea', base_id: 52775 });
+    const err = (await getDiversityTool.handler(input, ctx).catch((e) => e)) as {
+      code: number;
+      message: string;
+      data?: Record<string, unknown>;
+    };
+    expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(err.data?.reason).toBe('conflicting_taxon_filter');
+    expect(err.message).toBe(
+      'Got base_name "Ammonoidea" and base_id 52775 — PBDB accepts only one clade selector.',
+    );
+    expect(JSON.stringify(err.data)).toMatch(/Send base_id alone/);
+    expect(getDiversity).not.toHaveBeenCalled();
+  });
+
+  it('names the taxon id in the empty-bins notice when the filter was base_id (#20)', async () => {
+    getDiversity.mockResolvedValue({ bins: [] });
+    const ctx = createMockContext({ errors: getDiversityTool.errors });
+    await getDiversityTool.handler(
+      getDiversityTool.input.parse({ base_id: 52775, interval: 'Holocene' }),
+      ctx,
+    );
+    expect(String(getEnrichment(ctx).notice)).toContain(
+      'No diversity bins for "taxon_no 52775" over the requested span.',
+    );
+  });
+
   it('rejects an inverted or empty Ma span before hitting PBDB (inverted_ma_range)', async () => {
     const ctx = createMockContext({ errors: getDiversityTool.errors });
     for (const raw of [

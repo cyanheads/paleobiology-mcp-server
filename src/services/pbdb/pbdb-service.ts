@@ -36,6 +36,15 @@
  *    match count, independent of limit/offset) to the envelope at the cost of an
  *    upstream COUNT pass. It turns truncation from a full-page inference into a
  *    known fact and lets the tools state the exact remainder.
+ *  - `taxa/list` is the exception: there `records_found` is min(limit, true_total)
+ *    — always equal to the rows just returned — so `rowcount` cannot disclose a
+ *    truncated child list. Measured against a taxon with 1,077 immediate children:
+ *    200 at limit=200, 500 at limit=500, 1076 at limit=1076. Only a `limit=0`
+ *    preflight yields the real total, and that doubles the upstream calls on every
+ *    `show_children` request. The child pull therefore over-fetches ONE row and
+ *    reports a boolean `children_truncated` instead — same request count, honest
+ *    disclosure, and the caller pages with `childrenOffset` rather than needing an
+ *    exact count.
  * @module services/pbdb/pbdb-service
  */
 
@@ -69,6 +78,7 @@ import type {
   PbdbTaxonRecord,
   Taxon,
   TaxonClassification,
+  TaxonLookup,
   TaxonStub,
 } from './types.js';
 
@@ -79,6 +89,13 @@ const SHOW_BLOCKS = {
   collections: 'loc,strat,lith,env,time',
 } as const;
 
+/**
+ * Immediate children returned per `getTaxon` call. PBDB's `taxa/list` has no
+ * usable total for this relation, so the page is fixed and callers walk it with
+ * `childrenOffset`.
+ */
+export const TAXON_CHILDREN_PAGE_SIZE = 200;
+
 /** Map the agent-facing environment enum to PBDB `envtype` values. */
 function envtypeFor(env: EnvironmentFilter): string {
   switch (env) {
@@ -87,6 +104,16 @@ function envtypeFor(env: EnvironmentFilter): string {
     default:
       return env; // 'marine' | 'terrestrial' are direct macro-zones
   }
+}
+
+/**
+ * Render a clade-inclusive taxon id as PBDB's prefixed `base_id` value, or
+ * `undefined` when the caller filtered by name instead. PBDB rejects `base_name`
+ * and `base_id` together with HTTP 400; each tool guards the pair at its boundary
+ * so the agent gets a typed reason rather than the passed-through rejection.
+ */
+function baseIdParam(baseId: number | undefined): string | undefined {
+  return baseId != null ? `txn:${baseId}` : undefined;
 }
 
 /** Map the agent-facing resolution enum to PBDB `time_reso` values. */
@@ -252,10 +279,13 @@ export class PbdbService {
     const params: Record<string, string | number | undefined> = {
       show: SHOW_BLOCKS.occurrences,
       limit: cap,
+      offset: filter.offset,
       // Ask PBDB for the true match count so the caller can state the exact
-      // remainder instead of inferring truncation from a full page.
+      // remainder instead of inferring truncation from a full page. It is
+      // independent of `offset`, so the same total anchors every page.
       rowcount: 1,
       base_name: filter.baseName,
+      base_id: baseIdParam(filter.baseId),
       taxon_name: filter.taxonName,
       coll_id: filter.collectionNo,
       interval: filter.interval,
@@ -304,11 +334,12 @@ export class PbdbService {
 
   // ── Taxa ────────────────────────────────────────────────────────────────────
 
-  /** Resolve a taxon by name or integer id; optionally include immediate children. */
-  async getTaxon(
-    args: { name?: string; taxonNo?: number; showChildren: boolean },
-    ctx: Context,
-  ): Promise<Taxon> {
+  /**
+   * Resolve a taxon by name or integer id; optionally include one page of
+   * immediate children ({@link TAXON_CHILDREN_PAGE_SIZE} rows from
+   * `args.childrenOffset`), with `children_truncated` set when more remain.
+   */
+  async getTaxon(args: TaxonLookup, ctx: Context): Promise<Taxon> {
     const idParam = args.taxonNo != null ? `txn:${args.taxonNo}` : undefined;
     const { records } = await this.get<PbdbTaxonRecord>(
       'taxa/single',
@@ -331,15 +362,33 @@ export class PbdbService {
     const taxon = normalizeTaxon(rec);
 
     if (args.showChildren) {
+      const offset = args.childrenOffset ?? 0;
+      // Over-fetch by one row to learn whether another page exists. `rowcount`
+      // cannot answer that here: on `taxa/list` PBDB reports `records_found` as
+      // min(limit, true_total) — always equal to what it just returned — so the
+      // only exact total comes from a second `limit=0` preflight. Asking for one
+      // extra row instead keeps this to a single request; the sentinel row is
+      // dropped before the page is handed back.
       const { records: childRecords } = await this.get<PbdbTaxonRecord>(
         'taxa/list',
-        { id: `txn:${taxon.taxon_no}`, rel: 'children', show: 'app', limit: 200 },
+        {
+          id: `txn:${taxon.taxon_no}`,
+          rel: 'children',
+          show: 'app',
+          limit: TAXON_CHILDREN_PAGE_SIZE + 1,
+          offset,
+        },
         ctx,
         'getTaxonChildren',
       );
       taxon.children = childRecords
         .filter((c) => intId(c.taxon_no) !== taxon.taxon_no)
+        .slice(0, TAXON_CHILDREN_PAGE_SIZE)
         .map(normalizeTaxonStub);
+      taxon.children_offset = offset;
+      // Count the RAW rows, not the filtered stubs — the self-exclusion above
+      // could otherwise mask a full page as a short one.
+      taxon.children_truncated = childRecords.length > TAXON_CHILDREN_PAGE_SIZE;
     }
     return taxon;
   }
@@ -359,6 +408,7 @@ export class PbdbService {
       'occs/diversity',
       {
         base_name: filter.baseName,
+        base_id: baseIdParam(filter.baseId),
         count: filter.count,
         time_reso: timeResoFor(filter.resolution),
         interval: filter.interval,
@@ -385,6 +435,7 @@ export class PbdbService {
       // from a full page (a final page that exactly fills `limit` is not truncated).
       rowcount: 1,
       base_name: filter.baseName,
+      base_id: baseIdParam(filter.baseId),
       interval: filter.interval,
       max_ma: filter.maxMa,
       min_ma: filter.minMa,

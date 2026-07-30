@@ -252,7 +252,12 @@ export interface AppearanceWindow {
 /** A taxon record + its fossil temporal range. */
 export interface Taxon {
   accepted_name?: string;
+  /** One page of immediate children — set only when a children lookup was requested. */
   children?: TaxonStub[];
+  /** Offset the children page started at. Set alongside `children`. */
+  children_offset?: number;
+  /** True when immediate children remain past this page. Set alongside `children`. */
+  children_truncated?: boolean;
   classification: TaxonClassification;
   extant: boolean;
   occurrence_count?: number;
@@ -329,6 +334,8 @@ export interface Collection {
 
 /** Filter args for an occurrence search. */
 export interface OccurrenceFilter {
+  /** Clade-inclusive taxon id — PBDB `base_id=txn:<n>`. Mutually exclusive with `baseName`. */
+  baseId?: number;
   baseName?: string;
   /** Restrict to occurrences from a single collection (locality) — PBDB `coll_id`. */
   collectionNo?: number;
@@ -341,11 +348,26 @@ export interface OccurrenceFilter {
   lngmin?: number;
   maxMa?: number;
   minMa?: number;
+  /** Rows to skip before this page — PBDB `offset`, paired with `limit`. */
+  offset: number;
   taxonName?: string;
+}
+
+/**
+ * Lookup args for a taxon resolution — by name or by id, optionally pulling one
+ * page of immediate children starting at `childrenOffset`.
+ */
+export interface TaxonLookup {
+  childrenOffset?: number;
+  name?: string;
+  showChildren: boolean;
+  taxonNo?: number;
 }
 
 /** Filter args for a collection search. */
 export interface CollectionFilter {
+  /** Clade-inclusive taxon id — PBDB `base_id=txn:<n>`. Mutually exclusive with `baseName`. */
+  baseId?: number;
   baseName?: string;
   environment?: EnvironmentFilter;
   formation?: string;
@@ -361,9 +383,14 @@ export interface CollectionFilter {
   offset: number;
 }
 
-/** Filter args for a diversity curve. */
+/**
+ * Filter args for a diversity curve. Exactly one clade selector is required —
+ * `baseName` or `baseId`; the tool boundary rejects neither and both.
+ */
 export interface DiversityFilter {
-  baseName: string;
+  /** Clade-inclusive taxon id — PBDB `base_id=txn:<n>`. Mutually exclusive with `baseName`. */
+  baseId?: number;
+  baseName?: string;
   count: DiversityCount;
   interval?: string;
   maxMa?: number;

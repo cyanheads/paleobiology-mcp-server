@@ -108,6 +108,42 @@ describe('paleobiology_search_collections', () => {
     expect(searchCollections).not.toHaveBeenCalled();
   });
 
+  it('accepts base_id as a sole filter and maps it to the service (#20)', async () => {
+    let captured: CollectionFilter | undefined;
+    searchCollections.mockImplementation(async (filter: CollectionFilter) => {
+      captured = filter;
+      return result([hellCreek], { total: 84 });
+    });
+    const ctx = createMockContext({ errors: searchCollectionsTool.errors });
+    const input = searchCollectionsTool.input.parse({ base_id: 38613 });
+    const out = await searchCollectionsTool.handler(input, ctx);
+
+    expect(captured).toMatchObject({ baseId: 38613, limit: 100, offset: 0 });
+    expect(captured).not.toHaveProperty('baseName');
+    expect(out.collections).toHaveLength(1);
+    expect(getEnrichment(ctx).totalCount).toBe(84);
+  });
+
+  it('rejects base_name + base_id together at the boundary (#20)', async () => {
+    const ctx = createMockContext({ errors: searchCollectionsTool.errors });
+    const input = searchCollectionsTool.input.parse({
+      base_name: 'Tyrannosaurus',
+      base_id: 38613,
+    });
+    const err = (await searchCollectionsTool.handler(input, ctx).catch((e) => e)) as {
+      code: number;
+      message: string;
+      data?: Record<string, unknown>;
+    };
+    expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(err.data?.reason).toBe('conflicting_taxon_filter');
+    expect(err.message).toBe(
+      'Got base_name "Tyrannosaurus" and base_id 38613 — PBDB accepts only one clade selector.',
+    );
+    expect(JSON.stringify(err.data)).toMatch(/Send base_id alone/);
+    expect(searchCollections).not.toHaveBeenCalled();
+  });
+
   it('rejects a half-specified longitude box before hitting PBDB (incomplete_bbox)', async () => {
     const ctx = createMockContext({ errors: searchCollectionsTool.errors });
     for (const raw of [

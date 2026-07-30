@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.3.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/paleobiology-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/paleobiology-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/paleobiology-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.3.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/paleobiology-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/paleobiology-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/paleobiology-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -43,13 +43,15 @@ Eight tools (seven by default) — five domain tools for the Paleobiology Databa
 Search fossil occurrences filtered by taxon, geologic time, geography, and environment — the flagship.
 
 - `base_name` (a clade and all its descendants) or `taxon_name` (exact) for the taxon filter
+- `base_id` filters the same clade by its resolved PBDB `taxon_no` — take it from `paleobiology_get_taxon` (or `accepted_no` on an occurrence row) and skip the name ambiguity. `base_name` and `base_id` are mutually exclusive; sending both is rejected at the tool boundary
 - Age by a named interval (e.g. `Maastrichtian`) or a `max_ma`/`min_ma` range, and/or a lng/lat bounding box
 - `collection_no` scopes the search to a single locality — drill from a `paleobiology_search_collections` row into the fauna found there
 - `environment` enum: `marine`, `terrestrial`, `freshwater`
 - At least one filter (taxon, time, place, environment, or `collection_no`) is required — an unfiltered call is rejected before the upstream request, not reported as PBDB being unavailable
 - `lngmin`/`lngmax` are a closed pair (both or neither), and `min_ma` must be strictly less than `max_ma` — both are rejected at the tool boundary with a recovery hint, before the upstream request. A lone `latmin` or `latmax` is valid and filters as a half-plane
 - Every row carries two distinct coordinate systems — **modern** lng/lat (where the rock is today) and **paleo** lng/lat (where the landmass sat at deposition) — plus formation, age interval, and higher classification (phylum through genus)
-- Broad queries return many rows: an inline preview answers the immediate question, and when the set outgrows that preview the matching occurrences — up to the per-call cap (`limit`, further bounded by `PBDB_MAX_OCCURRENCES`) — stage on a DataCanvas for SQL via `paleobiology_dataframe_query`. `canvas_id` and `table_name` come back only on that spill path; a result that fits inline stages nothing. The response notice flags when the cap was hit and more may match upstream
+- Broad queries return many rows: an inline preview answers the immediate question, and when the set outgrows that preview the matching occurrences — up to the per-call cap (`limit`, further bounded by `PBDB_MAX_OCCURRENCES`) — stage on a DataCanvas for SQL via `paleobiology_dataframe_query`. `canvas_id` and `table_name` come back only on that spill path; a result that fits inline stages nothing
+- Results page inline via `limit`/`offset` against the true upstream match count. When occurrences remain, the notice names the page bounds and the exact next offset (`Showing occurrences 1–500 of 4170. Advance offset to 500 for the next page.`); paging past the end reports the overshoot instead of blaming the filters
 - Reusing a `canvas_id` **replaces** that canvas's occurrence table — each search restages its result, it does not accumulate across calls
 
 ---
@@ -59,7 +61,8 @@ Search fossil occurrences filtered by taxon, geologic time, geography, and envir
 Resolve a taxon by name or integer `taxon_no` to its full record and fossil temporal range — the name-resolution gateway the occurrence and diversity tools depend on.
 
 - Returns accepted name, rank, higher classification, immediate parent, occurrence count, and FAD/LAD range in Ma
-- `show_children` also lists immediate child taxa
+- The `taxon_no` it returns is the `base_id` accepted by `paleobiology_search_occurrences`, `paleobiology_get_diversity`, and `paleobiology_search_collections`
+- `show_children` also lists immediate child taxa, up to 200 per call. `children_truncated` says whether more remain and `children_offset` says where the page started — advance `children_offset` by 200 while `children_truncated` is true to walk the whole child list. A taxon with over 200 immediate children returns a page, never a silently clipped list
 - PBDB taxonomy is opinionated and can differ from GBIF's backbone, so the accepted name may differ from the searched name — the response surfaces both
 
 ---
@@ -68,7 +71,7 @@ Resolve a taxon by name or integer `taxon_no` to its full record and fossil temp
 
 Compute a diversity / origination / extinction curve for a clade across geologic time.
 
-- Clade-inclusive `base_name`, bound by a named interval (e.g. `Mesozoic`) or a `max_ma`/`min_ma` range (`min_ma` must be strictly less than `max_ma`)
+- Clade-inclusive `base_name` **or** `base_id` (exactly one is required; both together, or neither, is rejected at the tool boundary), bound by a named interval (e.g. `Mesozoic`) or a `max_ma`/`min_ma` range (`min_ma` must be strictly less than `max_ma`)
 - `count` enum: `genera`, `species`, `families`; `resolution` enum: `period`, `epoch`, `age`
 - The full bin set returns inline (a diversity series is a bounded set of geologic intervals)
 - Counts reflect **sampled** diversity, biased by collection effort and rock availability — not true past diversity
@@ -80,7 +83,7 @@ Compute a diversity / origination / extinction curve for a clade across geologic
 Find fossil collections (localities) by area and geologic time — "what has been dug up here, and from what rock."
 
 - Each locality returns location, age (named interval and Ma), formation and strata, lithology, depositional environment, and co-occurring-fossils count
-- Filter by `base_name`, a named interval or `max_ma`/`min_ma` range, a lng/lat bounding box, a `formation` or `lithology` name, and/or `environment` — at least one filter is required (an unfiltered call is rejected before the upstream request)
+- Filter by `base_name` or `base_id` (mutually exclusive), a named interval or `max_ma`/`min_ma` range, a lng/lat bounding box, a `formation` or `lithology` name, and/or `environment` — at least one filter is required (an unfiltered call is rejected before the upstream request)
 - Same bounding-box and Ma-ordering rules as `paleobiology_search_occurrences`: `lngmin`/`lngmax` both or neither, `min_ma` strictly less than `max_ma`
 - Results page inline via `limit`/`offset`; the response discloses when more remain
 - Take a `collection_no` from a row — or the same bbox+interval — into `paleobiology_search_occurrences` to see the fauna found together

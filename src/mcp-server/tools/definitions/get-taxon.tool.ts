@@ -2,14 +2,19 @@
  * @fileoverview paleobiology_get_taxon — taxonomic record + fossil temporal range.
  * Resolves a name or taxon_no to the accepted name, rank, classification, parent,
  * immediate children, occurrence count, and first/last-appearance (FAD/LAD)
- * range. The name-resolution gateway the occurrence and diversity tools depend on.
+ * range. The name-resolution gateway the occurrence, diversity, and collection
+ * searches depend on — its taxon_no is their `base_id`.
  * @module mcp-server/tools/definitions/get-taxon.tool
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
-import { getPbdbService, isNotFoundError } from '@/services/pbdb/pbdb-service.js';
-import type { Taxon } from '@/services/pbdb/types.js';
+import {
+  getPbdbService,
+  isNotFoundError,
+  TAXON_CHILDREN_PAGE_SIZE,
+} from '@/services/pbdb/pbdb-service.js';
+import type { Taxon, TaxonLookup } from '@/services/pbdb/types.js';
 import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
 
 /**
@@ -63,7 +68,12 @@ const ChildSchema = z
   .describe('An immediate child taxon stub.');
 
 const TaxonOutputSchema = z.object({
-  taxon_no: z.number().int().describe('Accepted PBDB taxon id — the canonical id for this taxon.'),
+  taxon_no: z
+    .number()
+    .int()
+    .describe(
+      'Accepted PBDB taxon id — the canonical id for this taxon. Pass it as base_id to paleobiology_search_occurrences, paleobiology_get_diversity, or paleobiology_search_collections to filter on this clade without re-sending a name.',
+    ),
   accepted_name: z.string().describe('PBDB accepted name (may differ from the searched name).'),
   rank: z.string().describe('Taxonomic rank, e.g. "genus", "family", "order".'),
   parent_no: z
@@ -85,7 +95,22 @@ const TaxonOutputSchema = z.object({
   children: z
     .array(ChildSchema)
     .optional()
-    .describe('Immediate child taxa — present only when show_children was true.'),
+    .describe(
+      `One page of immediate child taxa, at most ${TAXON_CHILDREN_PAGE_SIZE} — present only when show_children was true. A taxon with more children than that returns a page, not the full list; read children_truncated before treating it as complete.`,
+    ),
+  children_offset: z
+    .number()
+    .int()
+    .optional()
+    .describe(
+      'Position in the child list this page started at (0 is the first child). Present only when show_children was true.',
+    ),
+  children_truncated: z
+    .boolean()
+    .optional()
+    .describe(
+      `True when more immediate children remain past this page — re-call with children_offset advanced by ${TAXON_CHILDREN_PAGE_SIZE} to read the next. False means this page runs to the end of the child list. Present only when show_children was true.`,
+    ),
 });
 
 /** The shaped taxon contract both paleobiology_get_taxon and the taxon resource return. */
@@ -119,7 +144,14 @@ export function shapeTaxon(taxon: Taxon): TaxonOutput {
   if (taxon.parent_no != null) out.parent_no = taxon.parent_no;
   if (taxon.parent_name) out.parent_name = taxon.parent_name;
   if (taxon.occurrence_count != null) out.occurrence_count = taxon.occurrence_count;
-  if (taxon.children) out.children = taxon.children;
+  if (taxon.children) {
+    out.children = taxon.children;
+    // The child pull is a second upstream request whose page position and
+    // truncation verdict have no home on the child rows themselves — they ride
+    // the Taxon out of the service and get lifted to the top level here.
+    out.children_offset = taxon.children_offset ?? 0;
+    out.children_truncated = taxon.children_truncated ?? false;
+  }
   return out;
 }
 
@@ -129,9 +161,11 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
     'Resolve a taxon by name (e.g. "Tyrannosaurus") or by integer taxon_no to its accepted name, ' +
     'rank, higher classification, immediate parent, fossil occurrence count, and first/last ' +
     'appearance (FAD/LAD) range in millions of years — "when did this clade exist, and what is ' +
-    'it." Run this first to resolve a name into the accepted name and taxon_no that ' +
-    'paleobiology_search_occurrences and paleobiology_get_diversity filter on (it also appears as ' +
-    'accepted_no on occurrence rows). Set show_children to also list immediate child taxa. PBDB ' +
+    'it." Run this first to resolve a name into the accepted name and taxon_no, then pass that id as ' +
+    'base_id to paleobiology_search_occurrences, paleobiology_get_diversity, or ' +
+    'paleobiology_search_collections for a clade-inclusive filter that carries no name ambiguity (the ' +
+    'same id also appears as accepted_no on occurrence rows). Set show_children to also list ' +
+    'immediate child taxa. PBDB ' +
     "taxonomy is opinionated and can differ from GBIF's backbone, so the accepted name may differ " +
     'from the name you searched.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -153,10 +187,26 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
     show_children: z
       .boolean()
       .default(false)
-      .describe('When true, include the immediate child taxa of this taxon.'),
+      .describe(
+        `When true, include a page of the immediate child taxa of this taxon (at most ${TAXON_CHILDREN_PAGE_SIZE} per call — children_truncated says whether more remain).`,
+      ),
+    children_offset: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe(
+        `Number of immediate children to skip before the returned page — used only when show_children is true. Advance it by ${TAXON_CHILDREN_PAGE_SIZE} while children_truncated is true to walk the whole child list.`,
+      ),
   }),
   output: TaxonOutputSchema,
   enrichment: {
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when the child list was cut off at the per-page cap (naming the children_offset that reaches the next page), or when children_offset ran past the end of the child list.',
+      ),
     attribution: z.string().describe('CC-BY data attribution for the Paleobiology Database.'),
   },
   enrichmentTrailer: {
@@ -185,11 +235,10 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
       });
     }
 
-    const args: { name?: string; taxonNo?: number; showChildren: boolean } = {
-      showChildren: input.show_children,
-    };
+    const args: TaxonLookup = { showChildren: input.show_children };
     if (input.name) args.name = input.name;
     if (input.taxon_no != null) args.taxonNo = input.taxon_no;
+    if (input.show_children) args.childrenOffset = input.children_offset;
 
     let taxon: Taxon;
     try {
@@ -210,8 +259,33 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
     }
 
     ctx.enrich({ attribution: PBDB_ATTRIBUTION });
-    ctx.log.info('Taxon resolved', { taxon_no: taxon.taxon_no, name: taxon.accepted_name });
-    return shapeTaxon(taxon);
+    const out = shapeTaxon(taxon);
+    ctx.log.info('Taxon resolved', {
+      taxon_no: taxon.taxon_no,
+      name: taxon.accepted_name,
+      children: out.children?.length,
+      children_offset: out.children_offset,
+      children_truncated: out.children_truncated,
+    });
+
+    // A cut-off child list must never read as the complete one, and an empty page
+    // past the end of a real child list is a paging mistake, not a childless taxon.
+    if (out.children) {
+      const start = out.children_offset ?? 0;
+      const last = start + out.children.length;
+      if (out.children_truncated) {
+        ctx.enrich.notice(
+          `Showing immediate children ${start + 1}–${last} of ${out.accepted_name}; more remain. ` +
+            `Advance children_offset to ${last} for the next page.`,
+        );
+      } else if (out.children.length === 0 && start > 0) {
+        ctx.enrich.notice(
+          `No immediate children at children_offset ${start} — the child list of ${out.accepted_name} ` +
+            'ends before it. Lower children_offset (0 starts at the first child).',
+        );
+      }
+    }
+    return out;
   },
 
   format: (result) => {
@@ -245,6 +319,18 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
         if (c.synonym_of) tail.push(`synonym of ${c.synonym_of}`);
         lines.push(`- ${c.name ?? `taxon #${c.taxon_no}`} (${tail.join(', ')})`);
       }
+    }
+    // Rendered whenever either field is set — not nested under the child list, so a
+    // truncated page and an empty past-the-end page both disclose in content[] too.
+    if (result.children_offset != null || result.children_truncated != null) {
+      const start = result.children_offset ?? 0;
+      const last = start + (result.children?.length ?? 0);
+      lines.push(
+        '',
+        result.children_truncated
+          ? `**children page:** children_offset ${start}, through child ${last} — children_truncated: yes, more remain. Re-call with children_offset ${last}.`
+          : `**children page:** children_offset ${start}, through child ${last} — children_truncated: no, this page reaches the end of the child list.`,
+      );
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

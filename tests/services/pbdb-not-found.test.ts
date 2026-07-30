@@ -170,7 +170,10 @@ describe('PbdbService not-found reclassification', () => {
 
     const err = (await (async () => {
       try {
-        for await (const _ of service.searchOccurrences({ limit: 100, lngmin: -130 }, ctx).rows);
+        for await (const _ of service.searchOccurrences(
+          { limit: 100, offset: 0, lngmin: -130 },
+          ctx,
+        ).rows);
         return;
       } catch (e) {
         return e as McpError;
@@ -225,7 +228,10 @@ describe('PbdbService not-found reclassification', () => {
 
     fetchWithTimeout.mockReset();
     fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
-    for await (const _ of service.searchOccurrences({ limit: 10, baseName: 'Canis' }, ctx).rows);
+    for await (const _ of service.searchOccurrences(
+      { limit: 10, offset: 0, baseName: 'Canis' },
+      ctx,
+    ).rows);
     expect(fetchWithTimeout.mock.calls[0]?.[3]).toMatchObject({ expectedStatuses: [] });
   });
 
@@ -264,7 +270,8 @@ describe('PbdbService not-found reclassification', () => {
     fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
     const ctx = createMockContext();
     const rows = [];
-    for await (const row of service.searchOccurrences({ limit: 100 }, ctx).rows) rows.push(row);
+    for await (const row of service.searchOccurrences({ limit: 100, offset: 0 }, ctx).rows)
+      rows.push(row);
     expect(rows).toEqual([]);
   });
 
@@ -285,7 +292,8 @@ describe('PbdbService not-found reclassification', () => {
     );
     const ctx = createMockContext();
     const rows = [];
-    for await (const row of service.searchOccurrences({ limit: 100 }, ctx).rows) rows.push(row);
+    for await (const row of service.searchOccurrences({ limit: 100, offset: 0 }, ctx).rows)
+      rows.push(row);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ occurrence_no: 139292, accepted_name: 'Tyrannosaurus rex' });
     expect(rows[0]?.lng).toBeCloseTo(-113.0289);
@@ -294,9 +302,123 @@ describe('PbdbService not-found reclassification', () => {
   it('passes coll_id to PBDB when a collection_no filter is set (drilldown)', async () => {
     fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
     const ctx = createMockContext();
-    for await (const _ of service.searchOccurrences({ limit: 50, collectionNo: 11917 }, ctx).rows);
+    for await (const _ of service.searchOccurrences(
+      { limit: 50, offset: 0, collectionNo: 11917 },
+      ctx,
+    ).rows);
     const url = fetchWithTimeout.mock.calls[0]?.[0] as URL;
     expect(url.searchParams.get('coll_id')).toBe('11917');
+  });
+
+  it('over-fetches one child row and flags truncation only when it comes back (#15)', async () => {
+    // The boundary case: PBDB's `taxa/list` reports records_found as
+    // min(limit, true_total), so the ONLY same-request truncation signal is
+    // whether the 201st row exists. 200 real children must NOT read as truncated.
+    const ctx = createMockContext();
+    const taxonRecord = { taxon_no: '10637', taxon_rank: 'genus', accepted_name: 'Turritella' };
+    const kids = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ taxon_no: String(500_000 + i), taxon_name: `c${i}` }));
+
+    for (const [returned, expectTruncated, expectChildren] of [
+      [200, false, 200],
+      [201, true, 200],
+      [3, false, 3],
+    ] as const) {
+      fetchWithTimeout.mockReset();
+      fetchWithTimeout
+        .mockResolvedValueOnce(okJson({ records: [taxonRecord] }))
+        .mockResolvedValueOnce(okJson({ records: kids(returned) }));
+
+      const taxon = await service.getTaxon({ taxonNo: 10637, showChildren: true }, ctx);
+      expect(taxon.children).toHaveLength(expectChildren);
+      expect(taxon.children_truncated).toBe(expectTruncated);
+      expect(taxon.children_offset).toBe(0);
+
+      // One extra row is requested, never 200 — that is what makes the flag honest.
+      const childUrl = fetchWithTimeout.mock.calls[1]?.[0] as URL;
+      expect(childUrl.pathname).toContain('taxa/list');
+      expect(childUrl.searchParams.get('limit')).toBe('201');
+      expect(childUrl.searchParams.get('rel')).toBe('children');
+      expect(childUrl.searchParams.get('offset')).toBe('0');
+      // Exactly two upstream calls — no `limit=0` preflight for an exact count.
+      expect(fetchWithTimeout).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it('sends childrenOffset on the child page and echoes it back (#15)', async () => {
+    const ctx = createMockContext();
+    fetchWithTimeout
+      .mockResolvedValueOnce(
+        okJson({
+          records: [{ taxon_no: '10637', taxon_rank: 'genus', accepted_name: 'Turritella' }],
+        }),
+      )
+      .mockResolvedValueOnce(okJson({ records: [{ taxon_no: '777', taxon_name: 'later child' }] }));
+
+    const taxon = await service.getTaxon(
+      { taxonNo: 10637, showChildren: true, childrenOffset: 200 },
+      ctx,
+    );
+    const childUrl = fetchWithTimeout.mock.calls[1]?.[0] as URL;
+    expect(childUrl.searchParams.get('offset')).toBe('200');
+    expect(taxon.children_offset).toBe(200);
+    expect(taxon.children_truncated).toBe(false);
+    expect(taxon.children?.[0]).toMatchObject({ taxon_no: 777, name: 'later child' });
+  });
+
+  it('leaves the children fields unset when no child lookup was requested (#15)', async () => {
+    fetchWithTimeout.mockResolvedValue(
+      okJson({
+        records: [{ taxon_no: '54833', taxon_rank: 'genus', accepted_name: 'Tyrannosaurus' }],
+      }),
+    );
+    const ctx = createMockContext();
+    const taxon = await service.getTaxon({ taxonNo: 54833, showChildren: false }, ctx);
+
+    expect(taxon.children).toBeUndefined();
+    expect(taxon.children_offset).toBeUndefined();
+    expect(taxon.children_truncated).toBeUndefined();
+    expect(fetchWithTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends offset on the occurrence query (#14)', async () => {
+    fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
+    const ctx = createMockContext();
+    for await (const _ of service.searchOccurrences(
+      { limit: 50, offset: 150, baseName: 'Dinosauria' },
+      ctx,
+    ).rows);
+    const url = fetchWithTimeout.mock.calls[0]?.[0] as URL;
+    expect(url.searchParams.get('offset')).toBe('150');
+    expect(url.searchParams.get('limit')).toBe('50');
+    // `rowcount` is what keeps the total independent of the page being read.
+    expect(url.searchParams.get('rowcount')).toBe('1');
+  });
+
+  it('renders baseId as PBDB txn:<n> on all three taxon-filtered endpoints (#20)', async () => {
+    fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
+    const ctx = createMockContext();
+
+    for await (const _ of service.searchOccurrences({ limit: 10, offset: 0, baseId: 38613 }, ctx)
+      .rows);
+    let url = fetchWithTimeout.mock.calls[0]?.[0] as URL;
+    expect(url.pathname).toContain('occs/list');
+    expect(url.searchParams.get('base_id')).toBe('txn:38613');
+    expect(url.searchParams.has('base_name')).toBe(false);
+
+    fetchWithTimeout.mockClear();
+    await service.searchCollections({ limit: 10, offset: 0, baseId: 38613 }, ctx);
+    url = fetchWithTimeout.mock.calls[0]?.[0] as URL;
+    expect(url.pathname).toContain('colls/list');
+    expect(url.searchParams.get('base_id')).toBe('txn:38613');
+    expect(url.searchParams.has('base_name')).toBe(false);
+
+    fetchWithTimeout.mockClear();
+    await service.getDiversity({ baseId: 52775, count: 'genera', resolution: 'period' }, ctx);
+    url = fetchWithTimeout.mock.calls[0]?.[0] as URL;
+    expect(url.pathname).toContain('occs/diversity');
+    expect(url.searchParams.get('base_id')).toBe('txn:52775');
+    expect(url.searchParams.has('base_name')).toBe(false);
   });
 });
 
@@ -399,8 +521,10 @@ describe('PbdbService upstream-error sanitization (no leak on non-not-found fail
     // searchOccurrences hands back a row generator — draining it triggers the fetch.
     const drained = (async () => {
       try {
-        for await (const _ of service.searchOccurrences({ limit: 100, baseName: 'Dinosauria' }, ctx)
-          .rows);
+        for await (const _ of service.searchOccurrences(
+          { limit: 100, offset: 0, baseName: 'Dinosauria' },
+          ctx,
+        ).rows);
         return;
       } catch (e) {
         return e as McpError;
@@ -440,8 +564,10 @@ describe('PbdbService envelope metadata (warnings + rowcount totals)', () => {
 
     fetchWithTimeout.mockReset();
     fetchWithTimeout.mockResolvedValue(okJson({ records: [], records_found: 0 }));
-    for await (const _ of service.searchOccurrences({ limit: 100, baseName: 'Dinosauria' }, ctx)
-      .rows);
+    for await (const _ of service.searchOccurrences(
+      { limit: 100, offset: 0, baseName: 'Dinosauria' },
+      ctx,
+    ).rows);
     const occUrl = fetchWithTimeout.mock.calls[0]?.[0] as URL | undefined;
     expect(occUrl?.searchParams.get('rowcount')).toBe('1');
   });
@@ -564,7 +690,10 @@ describe('PbdbService envelope metadata (warnings + rowcount totals)', () => {
       }),
     );
     const ctx = createMockContext();
-    const typo = service.searchOccurrences({ limit: 100, baseName: 'Tyrannosauruss' }, ctx);
+    const typo = service.searchOccurrences(
+      { limit: 100, offset: 0, baseName: 'Tyrannosauruss' },
+      ctx,
+    );
     for await (const _ of typo.rows);
     expect(typo.meta.warnings?.[0]).toMatch(/did not match the currently accepted variant/);
     expect(typo.meta.recordsFound).toBe(0);

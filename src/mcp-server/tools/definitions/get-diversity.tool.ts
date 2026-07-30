@@ -45,7 +45,8 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
   description:
     'Compute a diversity / origination / extinction curve for a clade across geologic time, binned ' +
     'by period, epoch, or age — answers "plot dinosaur genus diversity across the Mesozoic." Pass a ' +
-    'clade-inclusive base_name and bound the span by a named interval (e.g. "Mesozoic") or a ' +
+    'clade-inclusive base_name (or base_id, the same clade by resolved taxon id — exactly one of the ' +
+    'two) and bound the span by a named interval (e.g. "Mesozoic") or a ' +
     'max_ma/min_ma range; choose what to count (genera, species, or families) and the bin resolution. ' +
     'The full bin set returns inline — a diversity series is a bounded set of geologic intervals — so ' +
     'you read the curve, the turnover, and the per-bin origination/extinction directly. Counts reflect ' +
@@ -54,8 +55,17 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
   input: z.object({
     base_name: z
       .string()
+      .optional()
       .describe(
-        'Clade-inclusive taxon to count, e.g. "Dinosauria" or "Ammonoidea" — this taxon and all descendants.',
+        'Clade-inclusive taxon to count, e.g. "Dinosauria" or "Ammonoidea" — this taxon and all descendants. Supply this or base_id (exactly one is required, never both).',
+      ),
+    base_id: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'Clade-inclusive taxon to count, by PBDB taxon id — the taxon_no from paleobiology_get_taxon, or accepted_no on an occurrence row. Same semantics as base_name, but unambiguous where a name is not (homonyms, synonyms, unresolved spellings). Supply this or base_name (exactly one is required, never both).',
       ),
     count: z
       .enum(COUNTS)
@@ -108,6 +118,20 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
   },
   errors: [
     {
+      reason: 'missing_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'Neither base_name nor base_id was supplied — a diversity curve needs a clade to count.',
+      recovery:
+        'Provide a clade-inclusive base_name (e.g. "Dinosauria"), or a base_id resolved with paleobiology_get_taxon, then retry.',
+    },
+    {
+      reason: 'conflicting_taxon_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'Both base_name and base_id were supplied — PBDB accepts only one clade selector.',
+      recovery:
+        'Send base_id alone when the taxon id is already resolved, or base_name alone when working from a name — drop the other and retry.',
+    },
+    {
       reason: 'inverted_ma_range',
       code: JsonRpcErrorCode.InvalidParams,
       when: 'min_ma was greater than or equal to max_ma — the span is inverted or empty.',
@@ -117,6 +141,20 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
   ],
 
   async handler(input, ctx) {
+    if (input.base_name == null && input.base_id == null) {
+      throw ctx.fail(
+        'missing_filter',
+        'paleobiology_get_diversity needs a clade to count — supply base_name or base_id.',
+        { ...ctx.recoveryFor('missing_filter') },
+      );
+    }
+    if (input.base_name != null && input.base_id != null) {
+      throw ctx.fail(
+        'conflicting_taxon_filter',
+        `Got base_name "${input.base_name}" and base_id ${input.base_id} — PBDB accepts only one clade selector.`,
+        { ...ctx.recoveryFor('conflicting_taxon_filter') },
+      );
+    }
     if (input.max_ma != null && input.min_ma != null && input.min_ma >= input.max_ma) {
       throw ctx.fail(
         'inverted_ma_range',
@@ -126,10 +164,11 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     }
 
     const filter: DiversityFilter = {
-      baseName: input.base_name,
       count: input.count,
       resolution: input.resolution,
     };
+    if (input.base_name) filter.baseName = input.base_name;
+    if (input.base_id != null) filter.baseId = input.base_id;
     if (input.interval) filter.interval = input.interval;
     if (input.max_ma != null) filter.maxMa = input.max_ma;
     if (input.min_ma != null) filter.minMa = input.min_ma;
@@ -142,17 +181,19 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     ctx.enrich.total(bins.length);
     ctx.log.info('Diversity curve', {
       base_name: input.base_name,
+      base_id: input.base_id,
       bins: bins.length,
       warnings: warnings?.length ?? 0,
     });
 
     // An unresolvable base_name and a clade with no data in the span both return
     // zero bins; only PBDB's warning tells them apart.
+    const clade = input.base_name ?? `taxon_no ${input.base_id}`;
     emitNotice(
       ctx,
       ignoredFilterNotice(warnings),
       bins.length === 0
-        ? `No diversity bins for "${input.base_name}" over the requested span. Verify the taxon name with ` +
+        ? `No diversity bins for "${clade}" over the requested span. Verify the taxon with ` +
             'paleobiology_get_taxon and confirm the interval/Ma range overlaps its fossil range.'
         : undefined,
     );

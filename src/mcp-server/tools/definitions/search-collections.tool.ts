@@ -77,7 +77,8 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
     'Find fossil collections (localities) by area and geologic time — "what has been dug up here, and ' +
     'from what rock." Each locality returns its location, age (named interval and Ma), formation and ' +
     'strata, lithology, depositional environment, and the count of co-occurring fossils. Filter by a ' +
-    'clade-inclusive base_name, a named interval or max_ma/min_ma range, a lng/lat bounding box, a ' +
+    'clade-inclusive base_name (or base_id, the same clade by resolved taxon id), a named interval or ' +
+    'max_ma/min_ma range, a lng/lat bounding box, a ' +
     'formation or lithology name, and/or an environment. Results page inline via limit/offset (the ' +
     'response discloses when more remain). Take a collection_no from a row and pass it — or the same ' +
     'bbox+interval — to paleobiology_search_occurrences to see the actual fauna found together.',
@@ -87,7 +88,15 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
       .string()
       .optional()
       .describe(
-        'Clade-inclusive taxon filter — localities yielding this taxon or its descendants, e.g. "Dinosauria".',
+        'Clade-inclusive taxon filter — localities yielding this taxon or its descendants, e.g. "Dinosauria". Supply this or base_id, never both.',
+      ),
+    base_id: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'Clade-inclusive taxon filter by PBDB taxon id — the taxon_no from paleobiology_get_taxon, or accepted_no on an occurrence row. Same semantics as base_name, but unambiguous where a name is not (homonyms, synonyms, unresolved spellings). Supply this or base_name, never both.',
       ),
     interval: z
       .string()
@@ -206,7 +215,14 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
       code: JsonRpcErrorCode.InvalidParams,
       when: 'The call carried only pagination fields — no taxon, time, place, formation, lithology, or environment filter.',
       recovery:
-        'Provide at least one filter: base_name, an interval or max_ma/min_ma range, a lng/lat bounding box, a formation or lithology, or an environment — then retry.',
+        'Provide at least one filter: base_name or base_id, an interval or max_ma/min_ma range, a lng/lat bounding box, a formation or lithology, or an environment — then retry.',
+    },
+    {
+      reason: 'conflicting_taxon_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'Both base_name and base_id were supplied — PBDB accepts only one clade selector.',
+      recovery:
+        'Send base_id alone when the taxon id is already resolved, or base_name alone when working from a name — drop the other and retry.',
     },
     {
       reason: 'incomplete_bbox',
@@ -232,6 +248,13 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
         { ...ctx.recoveryFor('missing_filter') },
       );
     }
+    if (input.base_name != null && input.base_id != null) {
+      throw ctx.fail(
+        'conflicting_taxon_filter',
+        `Got base_name "${input.base_name}" and base_id ${input.base_id} — PBDB accepts only one clade selector.`,
+        { ...ctx.recoveryFor('conflicting_taxon_filter') },
+      );
+    }
     if ((input.lngmin == null) !== (input.lngmax == null)) {
       throw ctx.fail(
         'incomplete_bbox',
@@ -249,6 +272,7 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
 
     const filter: CollectionFilter = { limit: input.limit, offset: input.offset };
     if (input.base_name) filter.baseName = input.base_name;
+    if (input.base_id != null) filter.baseId = input.base_id;
     if (input.interval) filter.interval = input.interval;
     if (input.max_ma != null) filter.maxMa = input.max_ma;
     if (input.min_ma != null) filter.minMa = input.min_ma;
@@ -354,6 +378,7 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
 /** True when the call carries at least one real search selector (not just pagination). */
 function hasCollectionFilter(input: {
   base_name?: string | undefined;
+  base_id?: number | undefined;
   interval?: string | undefined;
   max_ma?: number | undefined;
   min_ma?: number | undefined;
@@ -367,6 +392,7 @@ function hasCollectionFilter(input: {
 }): boolean {
   return (
     input.base_name != null ||
+    input.base_id != null ||
     input.interval != null ||
     input.max_ma != null ||
     input.min_ma != null ||

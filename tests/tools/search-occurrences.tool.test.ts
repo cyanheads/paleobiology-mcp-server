@@ -110,7 +110,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     expect(String(enr.attribution)).toMatch(/Paleobiology Database/);
   });
 
-  it('states the exact remainder against the true match count (#13)', async () => {
+  it('names the page range and the next offset against the true match count (#13, #14)', async () => {
     const rows = Array.from({ length: 2 }, (_, i) => ({ ...tRex, occurrence_no: i + 1 }));
     stubRows(rows, { recordsFound: 4170 });
     const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
@@ -121,10 +121,92 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     const enr = getEnrichment(ctx);
     // totalCount is the upstream match count, not the returned page size.
     expect(enr.totalCount).toBe(4170);
-    // The notice names both numbers and the exact shortfall — no "more may match" hedge.
-    expect(String(enr.notice)).toContain('Returned 2 of 4170 matching occurrences');
-    expect(String(enr.notice)).toContain('left 4168 unreturned');
+    // Advancing offset is the primary next step — exact page bounds, exact next offset.
+    expect(String(enr.notice)).toContain('Showing occurrences 1–2 of 4170.');
+    expect(String(enr.notice)).toContain('Advance offset to 2 for the next page.');
+    expect(String(enr.notice)).toContain('Or raise limit (max 500) to pull more per page.');
     expect(String(enr.notice)).toMatch(/CANVAS_PROVIDER_TYPE=duckdb/);
+  });
+
+  it('threads offset into the service filter and reports the second page (#14)', async () => {
+    let captured: OccurrenceFilter | undefined;
+    const page2 = Array.from({ length: 2 }, (_, i) => ({ ...tRex, occurrence_no: 100 + i }));
+    searchOccurrences.mockImplementation((filter: OccurrenceFilter) => {
+      captured = filter;
+      return { rows: rowGen(page2), meta: { recordsFound: 87 } };
+    });
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({
+      base_name: 'Tyrannosaurus',
+      limit: 2,
+      offset: 4,
+    });
+    const result = await searchOccurrencesTool.handler(input, ctx);
+
+    expect(captured).toMatchObject({ baseName: 'Tyrannosaurus', limit: 2, offset: 4 });
+    expect(result.occurrences.map((o) => o.occurrence_no)).toEqual([100, 101]);
+    const notice = String(getEnrichment(ctx).notice);
+    // Page numbers are absolute against the match set, not 1-based within the page.
+    expect(notice).toContain('Showing occurrences 5–6 of 87.');
+    expect(notice).toContain('Advance offset to 6 for the next page.');
+  });
+
+  it('defaults offset to 0 and omits the paging notice on the final page (#14)', async () => {
+    let captured: OccurrenceFilter | undefined;
+    searchOccurrences.mockImplementation((filter: OccurrenceFilter) => {
+      captured = filter;
+      return { rows: rowGen([tRex, { ...tRex, occurrence_no: 2 }]), meta: { recordsFound: 6 } };
+    });
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({
+      base_name: 'Tyrannosaurus',
+      limit: 2,
+      offset: 4,
+    });
+    await searchOccurrencesTool.handler(input, ctx);
+
+    expect(captured?.offset).toBe(4);
+    // offset 4 + 2 rows === the 6 upstream matches: nothing left, so no next-page advice.
+    expect(getEnrichment(ctx).notice).toBeUndefined();
+    expect(searchOccurrencesTool.input.parse({ base_name: 'X' }).offset).toBe(0);
+  });
+
+  it('reports the overshoot when offset ran past the end of a real match set (#14)', async () => {
+    // An empty page past the end is a paging mistake, not a too-narrow filter —
+    // the notice must not send the agent off to widen filters that DID match.
+    stubRows([], { recordsFound: 87 });
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({
+      base_name: 'Tyrannosaurus',
+      limit: 10,
+      offset: 200,
+    });
+    const result = await searchOccurrencesTool.handler(input, ctx);
+
+    expect(result).toMatchObject({ occurrences: [], spilled: false, row_count: 0 });
+    const enr = getEnrichment(ctx);
+    expect(enr.totalCount).toBe(87);
+    const notice = String(enr.notice);
+    expect(notice).toBe(
+      'Offset 200 is past the end of the 87 matching occurrences. ' +
+        'Lower offset to below 87 — the filters themselves matched.',
+    );
+    expect(notice).not.toContain('widen');
+    expect(notice).not.toContain('Verify the taxon name');
+  });
+
+  it('never advises raising limit when limit is already at its maximum (#14)', async () => {
+    const rows = Array.from({ length: 500 }, (_, i) => ({ ...tRex, occurrence_no: i + 1 }));
+    stubRows(rows, { recordsFound: 4170 });
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({ base_name: 'Dinosauria', limit: 500 });
+    await searchOccurrencesTool.handler(input, ctx);
+
+    const notice = String(getEnrichment(ctx).notice);
+    expect(notice).toContain('Showing occurrences 1–500 of 4170.');
+    expect(notice).toContain('Advance offset to 500 for the next page.');
+    // The pre-#14 copy told the agent to raise a limit that was already maxed.
+    expect(notice).not.toContain('raise limit');
   });
 
   it('claims no remainder when the returned page IS every match', async () => {
@@ -314,6 +396,55 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     expect(renderText(searchOccurrencesTool.format?.(result))).not.toContain('classification:**');
   });
 
+  it('accepts base_id as a sole filter and maps it to the service (#20)', async () => {
+    let captured: OccurrenceFilter | undefined;
+    searchOccurrences.mockImplementation((filter: OccurrenceFilter) => {
+      captured = filter;
+      return { rows: rowGen([tRex]), meta: { recordsFound: 87 } };
+    });
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({ base_id: 38613 });
+    const result = await searchOccurrencesTool.handler(input, ctx);
+
+    // base_id alone satisfies the missing-filter guard and reaches the service.
+    expect(captured).toMatchObject({ baseId: 38613 });
+    expect(captured).not.toHaveProperty('baseName');
+    expect(result.row_count).toBe(1);
+    expect(getEnrichment(ctx).totalCount).toBe(87);
+  });
+
+  it('rejects base_name + base_id together at the boundary (#20)', async () => {
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({
+      base_name: 'Tyrannosaurus',
+      base_id: 38613,
+    });
+    const err = (await searchOccurrencesTool.handler(input, ctx).catch((e) => e)) as {
+      code: number;
+      message: string;
+      data?: Record<string, unknown>;
+    };
+    expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(err.data?.reason).toBe('conflicting_taxon_filter');
+    expect(err.message).toBe(
+      'Got base_name "Tyrannosaurus" and base_id 38613 — PBDB accepts only one clade selector.',
+    );
+    expect(JSON.stringify(err.data)).toMatch(/Send base_id alone/);
+    // Guarded locally — PBDB's own HTTP 400 is never reached.
+    expect(searchOccurrences).not.toHaveBeenCalled();
+  });
+
+  it('names the taxon id in the empty notice when the filter was base_id (#20)', async () => {
+    stubRows([], { recordsFound: 0 });
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({ base_id: 38613, interval: 'Cambrian' });
+    await searchOccurrencesTool.handler(input, ctx);
+
+    expect(String(getEnrichment(ctx).notice)).toContain(
+      'No occurrences matched taxon_no 38613 in Cambrian.',
+    );
+  });
+
   it('accepts collection_no as a sole filter and maps it to the service (drilldown)', async () => {
     let captured: OccurrenceFilter | undefined;
     searchOccurrences.mockImplementation((filter: OccurrenceFilter) => {
@@ -452,10 +583,10 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
     expect(String(getEnrichment(ctx).notice)).not.toMatch(/unstaged/);
   });
 
-  it('names how many matches the cap left unstaged on a spilled set (#6, #13)', async () => {
+  it('names the next page on a spilled set that is only part of the match set (#6, #13, #14)', async () => {
     // Yield exactly `limit` rows so the staged count equals the per-call cap while
     // PBDB reports many more — the canvas holds a page, not the set, and the notice
-    // must state the exact shortfall rather than implying the table is complete.
+    // must say which page and how to reach the next rather than implying completeness.
     const capped = Array.from({ length: 500 }, (_, i) => ({
       ...tRex,
       occurrence_no: i + 1,
@@ -475,8 +606,38 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
     expect(enr.totalCount).toBe(4170);
     const notice = String(enr.notice);
     expect(notice).toContain('Staged 500 matching occurrences on canvas canvasCap03');
-    expect(notice).toContain('That staged set is 500 of 4170 matching');
-    expect(notice).toContain('left 3670 unstaged');
+    expect(notice).toContain('Showing occurrences 1–500 of 4170.');
+    expect(notice).toContain('Advance offset to 500 for the next page.');
+  });
+
+  it('pages a spilled set: offset 500 stages the second page and points at the third (#14)', async () => {
+    let captured: OccurrenceFilter | undefined;
+    const capped = Array.from({ length: 500 }, (_, i) => ({
+      ...tRex,
+      occurrence_no: 500 + i,
+      formation: 'X'.repeat(300),
+    }));
+    searchOccurrences.mockImplementation((filter: OccurrenceFilter) => {
+      captured = filter;
+      return { rows: rowGen(capped), meta: { recordsFound: 4170 } };
+    });
+    const instance = makeFakeInstance('canvasPg04');
+    getCanvas.mockReturnValue({ acquire: vi.fn().mockResolvedValue(instance) });
+
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({
+      base_name: 'Dinosauria',
+      limit: 500,
+      offset: 500,
+    });
+    const result = await searchOccurrencesTool.handler(input, ctx);
+
+    expect(captured?.offset).toBe(500);
+    expect(result.spilled).toBe(true);
+    expect(result.row_count).toBe(500);
+    const notice = String(getEnrichment(ctx).notice);
+    expect(notice).toContain('Showing occurrences 501–1000 of 4170.');
+    expect(notice).toContain('Advance offset to 1000 for the next page.');
   });
 
   it('sanitizes a hyphenated canvas id into a legal SQL table identifier', async () => {

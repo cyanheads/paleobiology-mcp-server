@@ -90,14 +90,132 @@ describe('paleobiology_get_taxon', () => {
     withChildren.children = [
       { taxon_no: 67659, name: 'Tarbosaurus', rank: 'genus', occurrence_count: 40 },
     ];
+    withChildren.children_offset = 0;
+    withChildren.children_truncated = false;
     getTaxon.mockResolvedValue(withChildren);
     const ctx = createMockContext({ errors: getTaxonTool.errors });
     const input = getTaxonTool.input.parse({ taxon_no: 54833, show_children: true });
     const result = await getTaxonTool.handler(input, ctx);
 
-    expect(getTaxon).toHaveBeenCalledWith({ taxonNo: 54833, showChildren: true }, ctx);
+    expect(getTaxon).toHaveBeenCalledWith(
+      { taxonNo: 54833, showChildren: true, childrenOffset: 0 },
+      ctx,
+    );
     expect(result.children).toHaveLength(1);
     expect(result.children?.[0]).toMatchObject({ taxon_no: 67659, name: 'Tarbosaurus' });
+  });
+
+  it('discloses a truncated child list and names the next children_offset (#15)', async () => {
+    // A taxon with more immediate children than one page holds: the page must not
+    // read as the complete list on either output surface.
+    const big = fullTaxon();
+    big.accepted_name = 'Turritella';
+    big.children = childPage(200, 0);
+    big.children_offset = 0;
+    big.children_truncated = true;
+    getTaxon.mockResolvedValue(big);
+    const ctx = createMockContext({ errors: getTaxonTool.errors });
+    const input = getTaxonTool.input.parse({ taxon_no: 10637, show_children: true });
+    const result = await getTaxonTool.handler(input, ctx);
+
+    expect(result).toEqual(expect.schemaMatching(getTaxonTool.output));
+    expect(result.children).toHaveLength(200);
+    expect(result.children_truncated).toBe(true);
+    expect(result.children_offset).toBe(0);
+    expect(String(getEnrichment(ctx).notice)).toBe(
+      'Showing immediate children 1–200 of Turritella; more remain. ' +
+        'Advance children_offset to 200 for the next page.',
+    );
+    // content[]-only clients see the same verdict, not just a bare list of 200.
+    const text = renderText(getTaxonTool.format?.(result));
+    expect(text).toContain(
+      '**children page:** children_offset 0, through child 200 — children_truncated: yes, more remain. Re-call with children_offset 200.',
+    );
+  });
+
+  it('reports a complete child list as complete (#15)', async () => {
+    const small = fullTaxon();
+    small.children = childPage(3, 0);
+    small.children_offset = 0;
+    small.children_truncated = false;
+    getTaxon.mockResolvedValue(small);
+    const ctx = createMockContext({ errors: getTaxonTool.errors });
+    const input = getTaxonTool.input.parse({ taxon_no: 54833, show_children: true });
+    const result = await getTaxonTool.handler(input, ctx);
+
+    expect(result.children_truncated).toBe(false);
+    // No notice: nothing was hidden, so there is nothing to warn about.
+    expect(getEnrichment(ctx).notice).toBeUndefined();
+    const text = renderText(getTaxonTool.format?.(result));
+    expect(text).toContain(
+      '**children page:** children_offset 0, through child 3 — children_truncated: no, this page reaches the end of the child list.',
+    );
+  });
+
+  it('threads children_offset to the service and reports the second page (#15)', async () => {
+    const page2 = fullTaxon();
+    page2.children = childPage(127, 200);
+    page2.children_offset = 200;
+    page2.children_truncated = false;
+    getTaxon.mockResolvedValue(page2);
+    const ctx = createMockContext({ errors: getTaxonTool.errors });
+    const input = getTaxonTool.input.parse({
+      taxon_no: 10637,
+      show_children: true,
+      children_offset: 200,
+    });
+    const result = await getTaxonTool.handler(input, ctx);
+
+    expect(getTaxon).toHaveBeenCalledWith(
+      { taxonNo: 10637, showChildren: true, childrenOffset: 200 },
+      ctx,
+    );
+    expect(result.children_offset).toBe(200);
+    expect(result.children?.[0]).toMatchObject({ taxon_no: 900_200 });
+    expect(getEnrichment(ctx).notice).toBeUndefined();
+    expect(renderText(getTaxonTool.format?.(result))).toContain(
+      'children_offset 200, through child 327',
+    );
+  });
+
+  it('reports an empty child page past the end as a paging overshoot (#15)', async () => {
+    const past = fullTaxon();
+    past.children = [];
+    past.children_offset = 1000;
+    past.children_truncated = false;
+    getTaxon.mockResolvedValue(past);
+    const ctx = createMockContext({ errors: getTaxonTool.errors });
+    const input = getTaxonTool.input.parse({
+      taxon_no: 10637,
+      show_children: true,
+      children_offset: 1000,
+    });
+    const result = await getTaxonTool.handler(input, ctx);
+
+    expect(result.children).toEqual([]);
+    expect(String(getEnrichment(ctx).notice)).toBe(
+      'No immediate children at children_offset 1000 — the child list of Tyrannosaurus ends before it. ' +
+        'Lower children_offset (0 starts at the first child).',
+    );
+  });
+
+  it('omits the children fields entirely when show_children was false', async () => {
+    getTaxon.mockResolvedValue(fullTaxon());
+    const ctx = createMockContext({ errors: getTaxonTool.errors });
+    const input = getTaxonTool.input.parse({ name: 'Tyrannosaurus' });
+    const result = await getTaxonTool.handler(input, ctx);
+
+    // No child lookup ran, so there is no page to describe — don't imply one.
+    expect(result).not.toHaveProperty('children');
+    expect(result).not.toHaveProperty('children_offset');
+    expect(result).not.toHaveProperty('children_truncated');
+    expect(getEnrichment(ctx).notice).toBeUndefined();
+    expect(renderText(getTaxonTool.format?.(result))).not.toContain('children page');
+    // children_offset is not forwarded when no child lookup was requested.
+    expect(getTaxon).toHaveBeenCalledWith(
+      expect.not.objectContaining({ childrenOffset: expect.anything() }),
+      ctx,
+    );
   });
 
   it('throws missing_selector when neither name nor taxon_no is given', async () => {
@@ -215,6 +333,15 @@ describe('paleobiology_get_taxon', () => {
     expect(text).toContain('extant:** no (extinct)');
   });
 });
+
+/** A page of `count` child stubs numbered from `offset`, as the service would return them. */
+function childPage(count: number, offset: number): NonNullable<Taxon['children']> {
+  return Array.from({ length: count }, (_, i) => ({
+    taxon_no: 900_000 + offset + i,
+    name: `Child ${offset + i}`,
+    rank: 'species',
+  }));
+}
 
 /** Join a format() block list into a single string for substring assertions. */
 function renderText(blocks: { type: string; text?: string }[] | undefined): string {
