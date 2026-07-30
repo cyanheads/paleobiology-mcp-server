@@ -3,9 +3,10 @@
  * path (full bin set inline), the oldest-first reordering of PBDB's native
  * newest-first bins (structuredContent + content[]), the required-field-on-empty
  * regression (a zero-bin result must still return { bins: [] } that validates and
- * carries an actionable notice), the filter → service mapping, the inverted-Ma
- * boundary guard (rejected before any PBDB call), and format() parity for both
- * populated and empty results.
+ * carries an actionable notice), the warning disclosure that separates an
+ * unresolvable base_name from a clade with no data in the span, the filter →
+ * service mapping, the inverted-Ma boundary guard (rejected before any PBDB
+ * call), and format() parity for both populated and empty results.
  *
  * The PBDB layer is never hit: getPbdbService().getDiversity is a per-test fake.
  * @module tests/tools/get-diversity.tool
@@ -67,7 +68,7 @@ describe('paleobiology_get_diversity', () => {
   });
 
   it('returns the full bin set inline and conforms to the output schema', async () => {
-    getDiversity.mockResolvedValue([cretaceousBin]);
+    getDiversity.mockResolvedValue({ bins: [cretaceousBin] });
     const ctx = createMockContext();
     const input = getDiversityTool.input.parse({ base_name: 'Dinosauria' });
     const result = await getDiversityTool.handler(input, ctx);
@@ -81,7 +82,7 @@ describe('paleobiology_get_diversity', () => {
   it('reorders PBDB newest-first bins to oldest-first (Triassic → Jurassic → Cretaceous)', async () => {
     // PBDB returns the Mesozoic newest-first; the handler flips it to oldest-first
     // so structuredContent.bins matches the schema's documented order.
-    getDiversity.mockResolvedValue([cretaceousBin, jurassicBin, triassicBin]);
+    getDiversity.mockResolvedValue({ bins: [cretaceousBin, jurassicBin, triassicBin] });
     const ctx = createMockContext();
     const input = getDiversityTool.input.parse({ base_name: 'Dinosauria', interval: 'Mesozoic' });
     const result = await getDiversityTool.handler(input, ctx);
@@ -100,7 +101,7 @@ describe('paleobiology_get_diversity', () => {
     let captured: DiversityFilter | undefined;
     getDiversity.mockImplementation(async (filter: DiversityFilter) => {
       captured = filter;
-      return [];
+      return { bins: [] };
     });
     const ctx = createMockContext();
     const input = getDiversityTool.input.parse({
@@ -137,7 +138,7 @@ describe('paleobiology_get_diversity', () => {
   });
 
   it('returns { bins: [] } (still valid) with a guidance notice on an empty result', async () => {
-    getDiversity.mockResolvedValue([]);
+    getDiversity.mockResolvedValue({ bins: [] });
     const ctx = createMockContext();
     const input = getDiversityTool.input.parse({ base_name: 'Nothingium', interval: 'Holocene' });
     const result = await getDiversityTool.handler(input, ctx);
@@ -148,6 +149,53 @@ describe('paleobiology_get_diversity', () => {
     expect(String(enr.notice)).toMatch(/No diversity bins for "Nothingium"/);
     // #3: notice + attribution are enrichment fields the framework renders into content[].
     expect(String(enr.attribution)).toMatch(/Paleobiology Database/);
+  });
+
+  it('separates an unresolvable base_name from a clade with no data in the span (#12)', async () => {
+    // Both return zero bins. Only PBDB's warning says the name never resolved.
+    getDiversity.mockResolvedValue({
+      bins: [],
+      warnings: [
+        "The name 'Dinosauriaa' did not match the currently accepted variant of any name in the taxonomy table",
+      ],
+    });
+    const typoCtx = createMockContext();
+    await getDiversityTool.handler(
+      getDiversityTool.input.parse({ base_name: 'Dinosauriaa' }),
+      typoCtx,
+    );
+    const typoNotice = String(getEnrichment(typoCtx).notice);
+    expect(typoNotice).toContain('PBDB could not use part of this query');
+    expect(typoNotice).toContain("The name 'Dinosauriaa' did not match");
+
+    getDiversity.mockResolvedValue({ bins: [] });
+    const emptyCtx = createMockContext();
+    await getDiversityTool.handler(
+      getDiversityTool.input.parse({ base_name: 'Dinosauria', interval: 'Holocene' }),
+      emptyCtx,
+    );
+    const emptyNotice = String(getEnrichment(emptyCtx).notice);
+    expect(emptyNotice).not.toContain('could not use');
+    expect(emptyNotice).toContain('No diversity bins for "Dinosauria"');
+    expect(typoNotice).not.toBe(emptyNotice);
+  });
+
+  it('discloses an ignored filter even when bins came back (#12)', async () => {
+    getDiversity.mockResolvedValue({
+      bins: [cretaceousBin],
+      warnings: ['the value of parameter "interval" was not recognized'],
+    });
+    const ctx = createMockContext();
+    await getDiversityTool.handler(
+      getDiversityTool.input.parse({ base_name: 'Dinosauria', interval: 'Nonsensian' }),
+      ctx,
+    );
+
+    const enr = getEnrichment(ctx);
+    expect(enr.totalCount).toBe(1);
+    expect(String(enr.notice)).toContain('PBDB could not use part of this query');
+    expect(String(enr.notice)).toContain('"interval" was not recognized');
+    expect(String(enr.notice)).not.toContain('No diversity bins');
   });
 
   it('format() renders a turnover table for populated bins', () => {

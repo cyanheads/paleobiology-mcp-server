@@ -27,6 +27,15 @@
  *    upstream plumbing (statusCode/responseBody/requestId/URL) the framework
  *    would otherwise forward to the client, re-minting a same-code error with
  *    leak-free `data`.
+ *  - PBDB reports a filter value it did not understand in `warnings[]` while
+ *    still answering HTTP 200 — and for `lithology` it answers with the FULL
+ *    UNFILTERED set. So warnings are carried out alongside the records rather
+ *    than dropped: without them an ignored filter is indistinguishable from a
+ *    real match, and an unmatched taxon name from a genuinely empty query.
+ *  - The list searches send `rowcount`, which adds `records_found` (the true
+ *    match count, independent of limit/offset) to the envelope at the cost of an
+ *    upstream COUNT pass. It turns truncation from a full-page inference into a
+ *    known fact and lets the tools state the exact remainder.
  * @module services/pbdb/pbdb-service
  */
 
@@ -46,13 +55,17 @@ import type {
   CollectionResult,
   DiversityBin,
   DiversityFilter,
+  DiversityResult,
   EnvironmentFilter,
   Occurrence,
   OccurrenceFilter,
+  OccurrenceSearch,
   PbdbCollectionRecord,
   PbdbDiversityRecord,
   PbdbEnvelope,
   PbdbOccurrenceRecord,
+  PbdbResponse,
+  PbdbSearchMeta,
   PbdbTaxonRecord,
   Taxon,
   TaxonClassification,
@@ -124,7 +137,8 @@ export class PbdbService {
   // ── Request plumbing ───────────────────────────────────────────────────────
 
   /**
-   * Issue a GET against a PBDB endpoint, with retry + timeout. Returns parsed records.
+   * Issue a GET against a PBDB endpoint, with retry + timeout. Returns the parsed
+   * records plus the envelope metadata riding alongside them (warnings, row counts).
    *
    * `expectedStatuses` lists the non-2xx statuses that are an ordinary outcome for
    * this endpoint rather than a fault — a single-record lookup answering "no such
@@ -138,7 +152,7 @@ export class PbdbService {
     ctx: Context,
     operation: string,
     expectedStatuses: number[] = [],
-  ): Promise<T[]> {
+  ): Promise<PbdbResponse<T>> {
     const url = new URL(`${this.baseUrl}/${path}.json`);
     url.searchParams.set('vocab', 'pbdb');
     for (const [k, v] of Object.entries(params)) {
@@ -187,8 +201,12 @@ export class PbdbService {
    * Parse a PBDB JSON envelope. PBDB also returns HTTP 200 with an `errors[]`
    * array for some not-found lookups — surface those as NotFound the caller can
    * reclassify. An HTML body means an upstream hiccup (transient).
+   *
+   * `errors[]` arrives INSTEAD of a result; `warnings[]` arrives ALONGSIDE one and
+   * is carried out on {@link PbdbSearchMeta} rather than raised — the call
+   * succeeded, PBDB just ignored part of the query.
    */
-  private parseEnvelope<T>(text: string, operation: string): T[] {
+  private parseEnvelope<T>(text: string, operation: string): PbdbResponse<T> {
     if (/^\s*<(!doctype\s+html|html[\s>])/i.test(text)) {
       throw serviceUnavailable(
         `PBDB returned HTML instead of JSON during ${operation} — likely a transient upstream issue.`,
@@ -210,20 +228,33 @@ export class PbdbService {
       // Caller-level "not found" — message carries PBDB's own text.
       throw notFound(body.errors.join('; '), { reason: 'pbdb_not_found' });
     }
-    return body.records ?? [];
+    const meta: PbdbSearchMeta = {};
+    if (body.warnings && body.warnings.length > 0) meta.warnings = body.warnings;
+    if (typeof body.records_found === 'number') meta.recordsFound = body.records_found;
+    if (typeof body.records_returned === 'number') meta.recordsReturned = body.records_returned;
+    return { records: body.records ?? [], meta };
   }
 
   // ── Occurrences ─────────────────────────────────────────────────────────────
 
   /**
-   * Search fossil occurrences. Returns an async generator so the spillover
-   * helper can stream rows up to the configured cap.
+   * Search fossil occurrences. Returns a {@link OccurrenceSearch} handle: an async
+   * generator the spillover helper streams rows from, plus the `meta` object the
+   * generator fills in from the upstream envelope before yielding its first row.
+   *
+   * The handle exists because neither drain path can see a generator's return
+   * value — `spillover()` discards `next.value` once `next.done` is set, and a
+   * `for await` loop does the same — so the true match count and PBDB's warnings
+   * need a channel the caller still holds after the stream is exhausted.
    */
-  async *searchOccurrences(filter: OccurrenceFilter, ctx: Context): AsyncGenerator<Occurrence> {
+  searchOccurrences(filter: OccurrenceFilter, ctx: Context): OccurrenceSearch {
     const cap = Math.min(filter.limit, getServerConfig().pbdbMaxOccurrences);
     const params: Record<string, string | number | undefined> = {
       show: SHOW_BLOCKS.occurrences,
       limit: cap,
+      // Ask PBDB for the true match count so the caller can state the exact
+      // remainder instead of inferring truncation from a full page.
+      rowcount: 1,
       base_name: filter.baseName,
       taxon_name: filter.taxonName,
       coll_id: filter.collectionNo,
@@ -236,18 +267,24 @@ export class PbdbService {
       latmax: filter.latmax,
       envtype: filter.environment ? envtypeFor(filter.environment) : undefined,
     };
-    const records = await this.get<PbdbOccurrenceRecord>(
-      'occs/list',
-      params,
-      ctx,
-      'searchOccurrences',
-    );
-    for (const r of records) yield normalizeOccurrence(r);
+    const meta: PbdbSearchMeta = {};
+    const self = this;
+    async function* rows(): AsyncGenerator<Occurrence> {
+      const response = await self.get<PbdbOccurrenceRecord>(
+        'occs/list',
+        params,
+        ctx,
+        'searchOccurrences',
+      );
+      Object.assign(meta, response.meta);
+      for (const r of response.records) yield normalizeOccurrence(r);
+    }
+    return { rows: rows(), meta };
   }
 
   /** Fetch one occurrence by its integer id. */
   async getOccurrence(occurrenceNo: number, ctx: Context): Promise<Occurrence> {
-    const records = await this.get<PbdbOccurrenceRecord>(
+    const { records } = await this.get<PbdbOccurrenceRecord>(
       'occs/single',
       { id: `occ:${occurrenceNo}`, show: SHOW_BLOCKS.occurrences },
       ctx,
@@ -273,7 +310,7 @@ export class PbdbService {
     ctx: Context,
   ): Promise<Taxon> {
     const idParam = args.taxonNo != null ? `txn:${args.taxonNo}` : undefined;
-    const records = await this.get<PbdbTaxonRecord>(
+    const { records } = await this.get<PbdbTaxonRecord>(
       'taxa/single',
       { name: args.name, id: idParam, show: SHOW_BLOCKS.taxa },
       ctx,
@@ -294,7 +331,7 @@ export class PbdbService {
     const taxon = normalizeTaxon(rec);
 
     if (args.showChildren) {
-      const childRecords = await this.get<PbdbTaxonRecord>(
+      const { records: childRecords } = await this.get<PbdbTaxonRecord>(
         'taxa/list',
         { id: `txn:${taxon.taxon_no}`, rel: 'children', show: 'app', limit: 200 },
         ctx,
@@ -309,9 +346,16 @@ export class PbdbService {
 
   // ── Diversity ────────────────────────────────────────────────────────────────
 
-  /** Compute a diversity / origination / extinction curve, binned by interval. */
-  async getDiversity(filter: DiversityFilter, ctx: Context): Promise<DiversityBin[]> {
-    const records = await this.get<PbdbDiversityRecord>(
+  /**
+   * Compute a diversity / origination / extinction curve, binned by interval.
+   *
+   * No `rowcount` here — a diversity response's row count is its bin count, which
+   * is already the whole curve; the metadata that matters is `warnings`, which is
+   * how an unmatched `base_name` reads differently from a clade with no data in
+   * the span (both return zero bins).
+   */
+  async getDiversity(filter: DiversityFilter, ctx: Context): Promise<DiversityResult> {
+    const { records, meta } = await this.get<PbdbDiversityRecord>(
       'occs/diversity',
       {
         base_name: filter.baseName,
@@ -324,7 +368,8 @@ export class PbdbService {
       ctx,
       'getDiversity',
     );
-    return records.map(normalizeDiversityBin);
+    const bins = records.map(normalizeDiversityBin);
+    return meta.warnings ? { bins, warnings: meta.warnings } : { bins };
   }
 
   // ── Collections ──────────────────────────────────────────────────────────────
@@ -336,6 +381,9 @@ export class PbdbService {
       show: SHOW_BLOCKS.collections,
       limit: cap,
       offset: filter.offset,
+      // Ask PBDB for the true match count so truncation is known, not inferred
+      // from a full page (a final page that exactly fills `limit` is not truncated).
+      rowcount: 1,
       base_name: filter.baseName,
       interval: filter.interval,
       max_ma: filter.maxMa,
@@ -348,19 +396,28 @@ export class PbdbService {
       lithology: filter.lithology,
       envtype: filter.environment ? envtypeFor(filter.environment) : undefined,
     };
-    const records = await this.get<PbdbCollectionRecord>(
+    const { records, meta } = await this.get<PbdbCollectionRecord>(
       'colls/list',
       params,
       ctx,
       'searchCollections',
     );
     const collections = records.map(normalizeCollection);
-    return {
+    const shown = collections.length;
+    const result: CollectionResult = {
       collections,
-      shown: collections.length,
-      truncated: collections.length >= cap,
+      shown,
+      offset: filter.offset,
+      // With the true total known, truncation is a fact: records remain only when
+      // this page ends before the total. Without it (PBDB omitted `records_found`),
+      // fall back to the page-filled heuristic, which over-reports a final full page.
+      truncated:
+        meta.recordsFound != null ? filter.offset + shown < meta.recordsFound : shown >= cap,
       cap,
     };
+    if (meta.recordsFound != null) result.total = meta.recordsFound;
+    if (meta.warnings) result.warnings = meta.warnings;
+    return result;
   }
 }
 

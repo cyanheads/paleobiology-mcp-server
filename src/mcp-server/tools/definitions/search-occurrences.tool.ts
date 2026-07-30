@@ -16,6 +16,7 @@ import {
   ClassificationSchema,
   fmtClassification,
 } from '@/mcp-server/tools/definitions/get-taxon.tool.js';
+import { emitNotice, ignoredFilterNotice } from '@/mcp-server/tools/pbdb-notices.js';
 import { getCanvas } from '@/services/canvas-accessor.js';
 import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
 import type { EnvironmentFilter, Occurrence, OccurrenceFilter } from '@/services/pbdb/types.js';
@@ -116,7 +117,7 @@ const SearchOccurrencesOutputSchema = z.object({
   occurrences: z
     .array(OccurrenceSchema)
     .describe(
-      'Inline preview of matching occurrences. The staged occurrence set is on the canvas when spilled is true — it may be a capped page rather than every match (the notice discloses when the per-call cap was hit).',
+      'Inline preview of matching occurrences. The staged occurrence set is on the canvas when spilled is true — it may be a capped page rather than every match (the notice states how many matched upstream and how many the per-call cap left behind).',
     ),
   spilled: z
     .boolean()
@@ -136,7 +137,7 @@ const SearchOccurrencesOutputSchema = z.object({
   row_count: z
     .number()
     .describe(
-      'Rows staged on the canvas when spilled; otherwise the preview length. Capped at the per-call limit (PBDB_MAX_OCCURRENCES) — when it equals that cap, more may match upstream.',
+      'Rows staged on the canvas when spilled; otherwise the preview length. Capped at the per-call limit (PBDB_MAX_OCCURRENCES) — compare against the totalCount enrichment for how many matched upstream.',
     ),
 });
 
@@ -159,7 +160,8 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     'immediate question, and when the set outgrows that preview the matching occurrences — up to the ' +
     'per-call cap — stage on a DataCanvas (canvas_id + table_name, returned only then) for SQL via ' +
     'paleobiology_dataframe_query (count by interval, group by formation/country, map by region). The ' +
-    'response notice flags when that cap was hit and more may match upstream.',
+    'response reports how many occurrences matched in total and, when the per-call cap stopped short of ' +
+    'that, exactly how many were left behind.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     base_name: z
@@ -260,12 +262,14 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
   enrichment: {
     totalCount: z
       .number()
-      .describe('Occurrences returned in the preview (or staged when spilled).'),
+      .describe(
+        'Total occurrences matching the filters upstream — the number this call was drawn from, which may exceed the staged set.',
+      ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when no occurrence matched, when results spilled to the canvas, or when DataCanvas is off.',
+        'Guidance when no occurrence matched, when results spilled to the canvas, when occurrences remain beyond the staged set, when a filter value was not recognized and ignored, or when DataCanvas is off.',
       ),
     attribution: z.string().describe('CC-BY data attribution for the Paleobiology Database.'),
   },
@@ -336,28 +340,41 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     const canvas = getCanvas();
 
     // The service pulls at most `cap` rows (the smaller of the caller's limit and
-    // the server-wide PBDB_MAX_OCCURRENCES). A result that fills the cap is a capped
-    // page — PBDB may hold more — so the notices below disclose that rather than
-    // claiming the staged set is every match.
+    // the server-wide PBDB_MAX_OCCURRENCES). PBDB reports the true match count
+    // (`records_found`) on the same envelope, so the notices below state the exact
+    // remainder instead of guessing from a full page.
     const cap = Math.min(input.limit, getServerConfig().pbdbMaxOccurrences);
 
     ctx.enrich({ attribution: PBDB_ATTRIBUTION });
 
+    // The row stream and its upstream metadata travel together: draining the
+    // generator (here or inside spillover) discards its return value, so the true
+    // total and PBDB's warnings are read off the handle once the drain completes.
+    const search = service.searchOccurrences(filter, ctx);
+
     if (!canvas) {
       // DataCanvas disabled — drain the (capped) result inline; no usable canvas_id.
       const rows: Occurrence[] = [];
-      for await (const row of service.searchOccurrences(filter, ctx)) rows.push(row);
-      ctx.enrich.total(rows.length);
+      for await (const row of search.rows) rows.push(row);
+      const total = search.meta.recordsFound ?? rows.length;
+      const ignored = ignoredFilterNotice(search.meta.warnings);
+      ctx.enrich.total(total);
       if (rows.length === 0) {
-        ctx.enrich.notice(emptyNotice(input));
-      } else if (rows.length >= cap) {
-        ctx.enrich.notice(
-          `Returned the first ${rows.length} occurrences — the per-call cap, so more may match. ` +
-            'Enable DataCanvas (CANVAS_PROVIDER_TYPE=duckdb) to stage a larger set for SQL, or narrow ' +
-            'the filter (interval, bounding box, taxon).',
+        emitNotice(ctx, ignored, emptyNotice(input));
+      } else {
+        const unreturned = total - rows.length;
+        emitNotice(
+          ctx,
+          ignored,
+          unreturned > 0
+            ? `Returned ${rows.length} of ${total} matching occurrences — the ${cap}-row per-call cap ` +
+                `left ${unreturned} unreturned. Enable DataCanvas (CANVAS_PROVIDER_TYPE=duckdb) ` +
+                'to stage a larger set for SQL, raise limit (max 500), or narrow the filter (interval, ' +
+                'bounding box, taxon).'
+            : undefined,
         );
       }
-      ctx.log.info('Occurrence search (no canvas)', { count: rows.length });
+      ctx.log.info('Occurrence search (no canvas)', { count: rows.length, total });
       return { occurrences: rows, spilled: false, row_count: rows.length };
     }
 
@@ -368,7 +385,7 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     const tableName = `occurrences_${instance.canvasId.replace(/[^A-Za-z0-9_]/g, '_')}`;
     const result = await spillover({
       canvas: instance,
-      source: service.searchOccurrences(filter, ctx),
+      source: search.rows,
       previewChars: 100_000, // ≈25k tokens inline
       tableName,
       signal: ctx.signal,
@@ -376,40 +393,51 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
 
     const previewRows = result.previewRows as Occurrence[];
     const stagedCount = result.spilled ? result.handle.rowCount : previewRows.length;
-    ctx.enrich.total(stagedCount);
-    // A staged count at the cap means the PBDB pull was truncated — disclose it.
-    const cappedPage = stagedCount >= cap;
+    const total = search.meta.recordsFound ?? stagedCount;
+    ctx.enrich.total(total);
+    const ignored = ignoredFilterNotice(search.meta.warnings);
+    // Known, not inferred: PBDB matched more than this call could pull.
+    const unstaged = total - stagedCount;
 
     if (previewRows.length === 0) {
-      ctx.enrich.notice(emptyNotice(input));
+      emitNotice(ctx, ignored, emptyNotice(input));
     } else if (result.spilled) {
-      const tail = cappedPage
-        ? ` This staged set hit the ${cap}-row per-call cap, so more may match — narrow the filter ` +
-          '(interval, bounding box, taxon) or raise limit (max 500) for the rest.'
-        : '';
-      ctx.enrich.notice(
+      const tail =
+        unstaged > 0
+          ? ` That staged set is ${stagedCount} of ${total} matching — the ${cap}-row per-call cap left ` +
+            `${unstaged} unstaged. Narrow the filter (interval, bounding box, taxon) or raise limit ` +
+            '(max 500) for the rest.'
+          : '';
+      emitNotice(
+        ctx,
+        ignored,
         `Staged ${stagedCount} matching occurrences on canvas ${instance.canvasId} as table ` +
           `"${result.handle.tableName}". Showing ${previewRows.length} inline; query the staged set ` +
           `with paleobiology_dataframe_query (e.g. count by interval, group by formation).${tail}`,
       );
-    } else if (cappedPage) {
-      // Everything fit inline, but the pull still filled the cap — disclose like the no-canvas path.
-      ctx.enrich.notice(
-        `Showing all ${previewRows.length} matching occurrences inline — the ${cap}-row per-call cap, ` +
-          'so more may match. Narrow the filter (interval, bounding box, taxon) or raise limit (max 500) ' +
-          'for the rest.',
+    } else if (unstaged > 0) {
+      // Everything fit inline, but the pull still stopped short of the match count.
+      emitNotice(
+        ctx,
+        ignored,
+        `Showing ${previewRows.length} of ${total} matching occurrences inline — the ${cap}-row ` +
+          `per-call cap left ${unstaged} unreturned. Narrow the filter (interval, bounding box, ` +
+          'taxon) or raise limit (max 500) for the rest.',
       );
+    } else {
+      emitNotice(ctx, ignored);
     }
     ctx.log.info('Occurrence search', {
       preview: previewRows.length,
       spilled: result.spilled,
+      total,
       canvas_id: instance.canvasId,
     });
 
     const out: z.infer<typeof SearchOccurrencesOutputSchema> = {
       occurrences: previewRows,
       spilled: result.spilled,
-      row_count: result.spilled ? result.handle.rowCount : previewRows.length,
+      row_count: stagedCount,
     };
     // canvas_id and table_name are gated together: nothing is staged unless the
     // result spilled, so returning the id on an inline result would point the

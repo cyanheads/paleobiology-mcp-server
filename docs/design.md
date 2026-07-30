@@ -128,8 +128,13 @@ every request and the right `show` blocks per tool; raw codes never reach the ag
 - **Data freshness:** occurrence/taxon/diversity/collection data is live (queried per call).
   The geologic time scale changes rarely (ICS revisions) and is bundled as a static snapshot;
   document the snapshot's ICS version and refresh on ICS updates.
-- **Paging:** PBDB list endpoints accept `limit` + `offset`. Capped lists must disclose
-  truncation (`truncated`, `shown`, `cap`) via `ctx.enrich.truncated(...)`.
+- **Paging:** PBDB list endpoints accept `limit` + `offset`, and `rowcount` adds
+  `records_found` (the true match count, independent of paging) to the envelope. The list
+  searches send it, so truncation is a known fact rather than an inference and the disclosure
+  (`truncated`, `shown`, `cap` via `ctx.enrich.truncated(...)`, plus `totalCount` via
+  `ctx.enrich.total(...)`) states the real remainder. Cost: an upstream COUNT pass per call.
+  PBDB's companion `records_returned` is not usable — it goes negative once `offset` runs past
+  the end — so count the parsed rows instead.
 - **Zod constraints:** `occurrence_no` / `taxon_no` / `collection_no` → `z.number().int().positive()`; `max_ma` / `min_ma` → `z.number().nonnegative()`; `limit` → `z.number().int().min(1).max(500).default(100)`; bbox fields → `z.number()` with coordinate-range bounds (`lng` −180…180, `lat` −90…90); `environment`, `count`, `resolution`, `level` → `z.enum([...])`. Format constraints live in Zod validators, not only in `.describe()` prose.
 
 **Out of scope (v1)**
@@ -257,7 +262,7 @@ block's boundary-crosser counts) are computed in the normalizer.
 
 | Service | Responsibility | Key methods |
 |---|---|---|
-| `PbdbService` (`src/services/pbdb/pbdb-service.ts`) | The PBDB HTTP client. Builds requests with `vocab=pbdb` + per-tool `show` blocks, wraps `fetchWithTimeout` + `withRetry`, parses + normalizes compact responses into the `Data Model` types, preserves upstream `warnings`. One method per resource family. | `searchOccurrences(filter)`, `getOccurrence(id)`, `getTaxon({name\|taxonNo, showChildren})`, `getDiversity(filter)`, `searchCollections(filter)` |
+| `PbdbService` (`src/services/pbdb/pbdb-service.ts`) | The PBDB HTTP client. Builds requests with `vocab=pbdb` + per-tool `show` blocks, wraps `fetchWithTimeout` + `withRetry`, parses + normalizes compact responses into the `Data Model` types, and carries the envelope metadata — upstream `warnings[]` and the `rowcount` match count — out alongside the records. One method per resource family. `searchOccurrences` returns a handle (`{ rows, meta }`) rather than a bare generator: `spillover()` and `for await` both discard a generator's return value, so the total and warnings need a channel the caller still holds after the drain. | `searchOccurrences(filter)`, `getOccurrence(id)`, `getTaxon({name\|taxonNo, showChildren})`, `getDiversity(filter)`, `searchCollections(filter)` |
 | `IntervalIndex` (`src/services/intervals/interval-index.ts`) | In-memory index over the **bundled** geologic time-scale snapshot (the ICS international scale, `scale_id=1`). Backs `paleobiology_list_intervals` with no network call and provides name↔Ma resolution the other services use to validate/echo temporal filters. Small bounded set (~200 intervals) → server-level in-memory index, not a `MirrorService` and not a DataCanvas. **Only the ICS international scale is bundled** — no `scale` input filter is exposed; the snapshot's ICS version and generation date are surfaced as `snapshot_version` in the `paleobiology_list_intervals` output so consumers can cite it. | `byName(name)`, `byMaRange(min,max,level?)`, `resolveInterval(nameOrMa)`, `all(level?)` |
 | `canvas-accessor` (`src/services/canvas-accessor.ts`) | Module-level `getCanvas()`/`setCanvas()` accessor wired from `setup(core)`. The spill path: the `paleobiology_search_occurrences` handler `spillover()`s large occurrence result sets onto a canvas; the `dataframe_*` tools query/describe/drop it. | `getCanvas()`, `setCanvas(core.canvas)` |
 
@@ -459,11 +464,20 @@ a reconciliation surfaced as the `identified_name` vs `accepted_name` split.
   **overwrites** that canvas's occurrence table with the new result — each search restages the
   full set, it does not append across calls. The `canvas_id` `.describe()` states this so an
   agent doesn't expect the workspace to grow by re-querying.
-- **Truncation disclosure.** When `paleobiology_search_occurrences` hits its cap without
-  spilling (canvas disabled), or when `paleobiology_search_collections` pages past its inline
-  `limit`, the handler discloses via `ctx.enrich.truncated({ shown, cap })` and
-  `ctx.enrich.total(n)` so both client surfaces (`structuredContent` and `content[]`) see that
-  the set is partial — a silent cap leaves the agent treating a slice as complete.
+- **Truncation disclosure, driven by the real total.** Both list searches send `rowcount` and
+  read `records_found`, so `ctx.enrich.total(n)` carries the upstream match count and the
+  partial-set disclosure names the exact remainder. Collections are truncated when
+  `offset + shown < records_found` — the page-filled heuristic it replaces falsely flagged a
+  final page that happened to fill `limit`. Occurrences disclose `staged N of records_found`
+  via `ctx.enrich.notice(...)`. Both reach `structuredContent` and `content[]`, so neither
+  client surface treats a slice as complete.
+- **Warnings ride the success path.** PBDB answers HTTP 200 with `warnings[]` when it could
+  not apply part of a query — and for an unrecognized `lithology` it returns the FULL
+  UNFILTERED set, so a dropped warning reads as a genuine match. `parseEnvelope` carries
+  `warnings[]` out alongside the records (`errors[]` stays a thrown NotFound — it arrives
+  *instead of* a result, warnings *alongside* one), and the three list searches compose them
+  into their `notice` enrichment. This is also what separates an unmatched taxon name from a
+  valid query with zero overlap: both return zero rows, only the warning tells them apart.
 - **`format()` parity.** Each tool's `format()` renders every output field as structured
   markdown (interval + Ma, modern + paleo coords, formation, accepted vs identified name) so
   `content[]`-only clients (Claude Desktop) see the same data as `structuredContent` clients
@@ -519,10 +533,10 @@ upstream failures are covered by baseline classification.
 - **The bundled time scale lags ICS revisions** until the snapshot is regenerated. Document
   the snapshot's ICS version; refresh on ICS updates.
 - **Paging cap.** Occurrence pulls cap at `PBDB_MAX_OCCURRENCES` before the canvas stream
-  closes; very large clades over long intervals may exceed it (the response discloses
-  truncation). Narrow the filter or query the staged canvas. Collections page inline
-  (`limit`/`offset`) under the same cap — no canvas, so very dense locality searches are paged
-  through, not staged.
+  closes; very large clades over long intervals exceed it, and the response says by how many
+  (staged count against `records_found`). Narrow the filter or query the staged canvas.
+  Collections page inline (`limit`/`offset`) under the same cap — no canvas, so very dense
+  locality searches are paged through, not staged.
 - **No canvas on Cloudflare Workers.** DuckDB has no V8-isolate build, so the spill path and
   `dataframe_*` tools are unavailable on a Workers deployment (the search tools still return
   inline previews). Node/Bun only for the analytical surface.

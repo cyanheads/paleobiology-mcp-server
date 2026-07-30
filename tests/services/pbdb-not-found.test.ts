@@ -14,6 +14,11 @@
  * withRetry's default predicate treats NotFound/Forbidden as non-transient, so
  * those resolve immediately; the transient cases (429/5xx/timeout/network) mock
  * a rejection for every attempt and assert the exhausted error is still clean.
+ *
+ * The final block covers the other half of the same parse: the envelope metadata
+ * that arrives ALONGSIDE a successful result — `warnings[]` (PBDB ignored part of
+ * the query) and the `rowcount` counters (`records_found`) — which the parser
+ * must carry out rather than drop.
  * @module tests/services/pbdb-not-found
  */
 
@@ -165,7 +170,7 @@ describe('PbdbService not-found reclassification', () => {
 
     const err = (await (async () => {
       try {
-        for await (const _ of service.searchOccurrences({ limit: 100, lngmin: -130 }, ctx));
+        for await (const _ of service.searchOccurrences({ limit: 100, lngmin: -130 }, ctx).rows);
         return;
       } catch (e) {
         return e as McpError;
@@ -220,7 +225,7 @@ describe('PbdbService not-found reclassification', () => {
 
     fetchWithTimeout.mockReset();
     fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
-    for await (const _ of service.searchOccurrences({ limit: 10, baseName: 'Canis' }, ctx));
+    for await (const _ of service.searchOccurrences({ limit: 10, baseName: 'Canis' }, ctx).rows);
     expect(fetchWithTimeout.mock.calls[0]?.[3]).toMatchObject({ expectedStatuses: [] });
   });
 
@@ -259,7 +264,7 @@ describe('PbdbService not-found reclassification', () => {
     fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
     const ctx = createMockContext();
     const rows = [];
-    for await (const row of service.searchOccurrences({ limit: 100 }, ctx)) rows.push(row);
+    for await (const row of service.searchOccurrences({ limit: 100 }, ctx).rows) rows.push(row);
     expect(rows).toEqual([]);
   });
 
@@ -280,7 +285,7 @@ describe('PbdbService not-found reclassification', () => {
     );
     const ctx = createMockContext();
     const rows = [];
-    for await (const row of service.searchOccurrences({ limit: 100 }, ctx)) rows.push(row);
+    for await (const row of service.searchOccurrences({ limit: 100 }, ctx).rows) rows.push(row);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ occurrence_no: 139292, accepted_name: 'Tyrannosaurus rex' });
     expect(rows[0]?.lng).toBeCloseTo(-113.0289);
@@ -289,7 +294,7 @@ describe('PbdbService not-found reclassification', () => {
   it('passes coll_id to PBDB when a collection_no filter is set (drilldown)', async () => {
     fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
     const ctx = createMockContext();
-    for await (const _ of service.searchOccurrences({ limit: 50, collectionNo: 11917 }, ctx));
+    for await (const _ of service.searchOccurrences({ limit: 50, collectionNo: 11917 }, ctx).rows);
     const url = fetchWithTimeout.mock.calls[0]?.[0] as URL;
     expect(url.searchParams.get('coll_id')).toBe('11917');
   });
@@ -391,13 +396,11 @@ describe('PbdbService upstream-error sanitization (no leak on non-not-found fail
     fetchWithTimeout.mockRejectedValue(networkError());
     const ctx = createMockContext();
 
-    // searchOccurrences is an async generator — draining it triggers the fetch.
+    // searchOccurrences hands back a row generator — draining it triggers the fetch.
     const drained = (async () => {
       try {
-        for await (const _ of service.searchOccurrences(
-          { limit: 100, baseName: 'Dinosauria' },
-          ctx,
-        ));
+        for await (const _ of service.searchOccurrences({ limit: 100, baseName: 'Dinosauria' }, ctx)
+          .rows);
         return;
       } catch (e) {
         return e as McpError;
@@ -411,5 +414,206 @@ describe('PbdbService upstream-error sanitization (no leak on non-not-found fail
     expectNoLeak(err, 'paleobiodb.org');
     expect(err.message).not.toContain('ECONNREFUSED');
     expect(err.data).not.toHaveProperty('originalErrorName');
+  });
+});
+
+describe('PbdbService envelope metadata (warnings + rowcount totals)', () => {
+  beforeEach(() => {
+    fetchWithTimeout.mockReset();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A fake `colls/list` page of n rows, numbered from 1. */
+  function collectionRows(n: number): { collection_no: string }[] {
+    return Array.from({ length: n }, (_, i) => ({ collection_no: String(i + 1) }));
+  }
+
+  it('requests rowcount on both list searches so PBDB reports the true match count', async () => {
+    fetchWithTimeout.mockResolvedValue(okJson({ records: [], records_found: 0 }));
+    const ctx = createMockContext();
+
+    await service.searchCollections({ limit: 100, offset: 0, baseName: 'Dinosauria' }, ctx);
+    const collUrl = fetchWithTimeout.mock.calls[0]?.[0] as URL | undefined;
+    expect(collUrl?.searchParams.get('rowcount')).toBe('1');
+
+    fetchWithTimeout.mockReset();
+    fetchWithTimeout.mockResolvedValue(okJson({ records: [], records_found: 0 }));
+    for await (const _ of service.searchOccurrences({ limit: 100, baseName: 'Dinosauria' }, ctx)
+      .rows);
+    const occUrl = fetchWithTimeout.mock.calls[0]?.[0] as URL | undefined;
+    expect(occUrl?.searchParams.get('rowcount')).toBe('1');
+  });
+
+  it('carries warnings[] out of a 200 that also returned a full record set', async () => {
+    // The silent-correctness case: an unrecognized lithology is DROPPED from the
+    // query, so PBDB answers with the whole unfiltered set plus a warning.
+    fetchWithTimeout.mockResolvedValue(
+      okJson({
+        records: collectionRows(3),
+        records_found: 1950,
+        records_returned: 3,
+        warnings: [
+          "there are no records with lithology or lithology type 'garbagexyz' in the database",
+        ],
+      }),
+    );
+    const ctx = createMockContext();
+    const result = await service.searchCollections(
+      { limit: 3, offset: 0, baseName: 'Dinosauria', lithology: 'GARBAGEXYZ' },
+      ctx,
+    );
+
+    expect(result.warnings).toEqual([
+      "there are no records with lithology or lithology type 'garbagexyz' in the database",
+    ]);
+    expect(result.total).toBe(1950);
+    expect(result.shown).toBe(3);
+    expect(result.truncated).toBe(true);
+  });
+
+  it('reports no warnings when PBDB applied every filter', async () => {
+    fetchWithTimeout.mockResolvedValue(
+      okJson({ records: collectionRows(3), records_found: 653, records_returned: 3 }),
+    );
+    const ctx = createMockContext();
+    const result = await service.searchCollections(
+      { limit: 3, offset: 0, baseName: 'Dinosauria', lithology: 'sandstone' },
+      ctx,
+    );
+
+    expect(result.warnings).toBeUndefined();
+    expect(result.total).toBe(653);
+  });
+
+  it('derives truncation from the true total, not from a page that filled the limit', async () => {
+    // The false positive this replaces: a final page of exactly `limit` rows with
+    // nothing left upstream. `shown >= cap` called that truncated; the total says no.
+    fetchWithTimeout.mockResolvedValue(
+      okJson({ records: collectionRows(84), records_found: 84, records_returned: 84 }),
+    );
+    const ctx = createMockContext();
+    const result = await service.searchCollections(
+      { limit: 84, offset: 0, baseName: 'Tyrannosaurus' },
+      ctx,
+    );
+
+    expect(result.shown).toBe(84);
+    expect(result.cap).toBe(84);
+    expect(result.total).toBe(84);
+    expect(result.truncated).toBe(false);
+  });
+
+  it('accounts for offset when deciding whether records remain', async () => {
+    // PBDB emits a NEGATIVE records_returned once offset runs past the end
+    // (limit - (offset - records_found)); the row count and offset decide instead.
+    fetchWithTimeout.mockResolvedValue(
+      okJson({ records: collectionRows(4), records_found: 84, records_returned: 4 }),
+    );
+    const ctx = createMockContext();
+    const lastPage = await service.searchCollections(
+      { limit: 100, offset: 80, baseName: 'Tyrannosaurus' },
+      ctx,
+    );
+    expect(lastPage.truncated).toBe(false);
+    expect(lastPage.offset).toBe(80);
+
+    fetchWithTimeout.mockReset();
+    fetchWithTimeout.mockResolvedValue(
+      okJson({ records: [], records_found: 84, records_returned: -116 }),
+    );
+    const pastEnd = await service.searchCollections(
+      { limit: 10, offset: 200, baseName: 'Tyrannosaurus' },
+      ctx,
+    );
+    expect(pastEnd.shown).toBe(0);
+    expect(pastEnd.truncated).toBe(false);
+    expect(pastEnd.total).toBe(84);
+  });
+
+  it('exposes the occurrence total and warnings on the handle after the stream drains', async () => {
+    fetchWithTimeout.mockResolvedValue(
+      okJson({
+        records: [{ occurrence_no: '1' }, { occurrence_no: '2' }],
+        records_found: 4170,
+        records_returned: 2,
+      }),
+    );
+    const ctx = createMockContext();
+    const search = service.searchOccurrences(
+      { limit: 2, baseName: 'Dinosauria', interval: 'Maastrichtian' },
+      ctx,
+    );
+    const rows = [];
+    for await (const row of search.rows) rows.push(row);
+
+    expect(rows).toHaveLength(2);
+    expect(search.meta.recordsFound).toBe(4170);
+    expect(search.meta.warnings).toBeUndefined();
+  });
+
+  it('distinguishes an unmatched occurrence name from a genuinely empty result', async () => {
+    fetchWithTimeout.mockResolvedValue(
+      okJson({
+        records: [],
+        records_found: 0,
+        warnings: [
+          "The name 'Tyrannosauruss' did not match the currently accepted variant of any name in the taxonomy table",
+        ],
+      }),
+    );
+    const ctx = createMockContext();
+    const typo = service.searchOccurrences({ limit: 100, baseName: 'Tyrannosauruss' }, ctx);
+    for await (const _ of typo.rows);
+    expect(typo.meta.warnings?.[0]).toMatch(/did not match the currently accepted variant/);
+    expect(typo.meta.recordsFound).toBe(0);
+
+    fetchWithTimeout.mockReset();
+    fetchWithTimeout.mockResolvedValue(okJson({ records: [], records_found: 0 }));
+    const empty = service.searchOccurrences(
+      { limit: 100, baseName: 'Tyrannosaurus', interval: 'Cambrian' },
+      ctx,
+    );
+    for await (const _ of empty.rows);
+    expect(empty.meta.warnings).toBeUndefined();
+    expect(empty.meta.recordsFound).toBe(0);
+  });
+
+  it('carries diversity warnings alongside an empty bin set', async () => {
+    fetchWithTimeout.mockResolvedValue(
+      okJson({
+        records: [],
+        warnings: [
+          "The name 'Dinosauriaa' did not match the currently accepted variant of any name in the taxonomy table",
+        ],
+      }),
+    );
+    const ctx = createMockContext();
+    const result = await service.getDiversity(
+      { baseName: 'Dinosauriaa', count: 'genera', resolution: 'period' },
+      ctx,
+    );
+
+    expect(result.bins).toEqual([]);
+    expect(result.warnings?.[0]).toMatch(/did not match/);
+  });
+
+  it('still throws NotFound when errors[] arrives, even alongside warnings[]', async () => {
+    // errors[] replaces a result; warnings[] accompanies one. The two must not
+    // be conflated now that both are read off the same envelope.
+    fetchWithTimeout.mockResolvedValue(
+      okJson({
+        errors: ['No records found for the specified query.'],
+        warnings: ['ignored a filter'],
+      }),
+    );
+    const ctx = createMockContext();
+    const err = (await service
+      .getTaxon({ taxonNo: 12345, showChildren: false }, ctx)
+      .catch((e) => e)) as McpError;
+
+    expect(isNotFoundError(err)).toBe(true);
+    expect(err.message).toMatch(/No records found/);
   });
 });

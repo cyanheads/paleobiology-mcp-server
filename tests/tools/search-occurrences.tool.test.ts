@@ -2,23 +2,25 @@
  * @fileoverview Handler tests for paleobiology_search_occurrences — the flagship.
  * Covers the canvas-disabled inline path (including the required-field-on-empty
  * regression: a zero-result return must still carry spilled/row_count and
- * validate against the output schema), the limit-truncation notice, the
+ * validate against the output schema), the true-total disclosure (the exact
+ * remainder against PBDB's match count, and no remainder claimed when the page
+ * IS the whole set), the ignored-filter and unmatched-name warning notices, the
  * canvas-enabled non-spilled and spilled branches (canvas_id is returned only on
  * the spill path — an inline result stages nothing), the cross-field boundary
  * guards (lngmin/lngmax both-or-neither, min_ma strictly below max_ma, both
  * rejected before any PBDB call), the environment-enum → filter mapping,
  * format() parity (modern vs paleo coords, classification), and sparse rows.
  *
- * Neither PBDB nor DuckDB is hit: getPbdbService() yields an async generator of
- * fake rows, and getCanvas() returns a fake DataCanvas whose acquired instance
- * stands in for the real spill target.
+ * Neither PBDB nor DuckDB is hit: getPbdbService() yields the `{ rows, meta }`
+ * search handle over fake rows, and getCanvas() returns a fake DataCanvas whose
+ * acquired instance stands in for the real spill target.
  * @module tests/tools/search-occurrences.tool
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Occurrence, OccurrenceFilter } from '@/services/pbdb/types.js';
+import type { Occurrence, OccurrenceFilter, PbdbSearchMeta } from '@/services/pbdb/types.js';
 
 const searchOccurrences = vi.fn();
 const getCanvas = vi.fn();
@@ -38,9 +40,16 @@ async function* rowGen(rows: Occurrence[]): AsyncGenerator<Occurrence> {
   for (const r of rows) yield r;
 }
 
-/** Make searchOccurrences yield these rows, capturing the filter it was called with. */
-function stubRows(rows: Occurrence[]): void {
-  searchOccurrences.mockImplementation((_filter: OccurrenceFilter) => rowGen(rows));
+/**
+ * Make searchOccurrences hand back these rows plus the upstream metadata that
+ * rides on the handle — `recordsFound` (PBDB's true match count) and `warnings`.
+ * An empty meta stands for an envelope with no rowcount block.
+ */
+function stubRows(rows: Occurrence[], meta: PbdbSearchMeta = {}): void {
+  searchOccurrences.mockImplementation((_filter: OccurrenceFilter) => ({
+    rows: rowGen(rows),
+    meta,
+  }));
 }
 
 const tRex: Occurrence = {
@@ -101,19 +110,83 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     expect(String(enr.attribution)).toMatch(/Paleobiology Database/);
   });
 
-  it('discloses truncation when the result fills the requested limit', async () => {
+  it('states the exact remainder against the true match count (#13)', async () => {
     const rows = Array.from({ length: 2 }, (_, i) => ({ ...tRex, occurrence_no: i + 1 }));
-    stubRows(rows);
+    stubRows(rows, { recordsFound: 4170 });
     const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
     const input = searchOccurrencesTool.input.parse({ base_name: 'Dinosauria', limit: 2 });
     const result = await searchOccurrencesTool.handler(input, ctx);
 
     expect(result.row_count).toBe(2);
-    // The pull filled the cap (limit 2) — disclose it honestly, don't imply completeness.
-    expect(String(getEnrichment(ctx).notice)).toMatch(
-      /first 2 occurrences.*CANVAS_PROVIDER_TYPE=duckdb/s,
+    const enr = getEnrichment(ctx);
+    // totalCount is the upstream match count, not the returned page size.
+    expect(enr.totalCount).toBe(4170);
+    // The notice names both numbers and the exact shortfall — no "more may match" hedge.
+    expect(String(enr.notice)).toContain('Returned 2 of 4170 matching occurrences');
+    expect(String(enr.notice)).toContain('left 4168 unreturned');
+    expect(String(enr.notice)).toMatch(/CANVAS_PROVIDER_TYPE=duckdb/);
+  });
+
+  it('claims no remainder when the returned page IS every match', async () => {
+    // The old `rows.length >= cap` heuristic fired here: a page that exactly fills
+    // the limit with nothing left upstream. The true total says otherwise.
+    const rows = Array.from({ length: 2 }, (_, i) => ({ ...tRex, occurrence_no: i + 1 }));
+    stubRows(rows, { recordsFound: 2 });
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({ base_name: 'Dinosauria', limit: 2 });
+    await searchOccurrencesTool.handler(input, ctx);
+
+    const enr = getEnrichment(ctx);
+    expect(enr.totalCount).toBe(2);
+    expect(enr.notice).toBeUndefined();
+  });
+
+  it('discloses that PBDB ignored a filter it could not resolve (#12)', async () => {
+    // The silent-correctness case: PBDB dropped the unrecognized value and returned
+    // the FULL unfiltered set, so a non-empty result here is NOT a match on it.
+    stubRows([tRex], {
+      recordsFound: 1,
+      warnings: [
+        "there are no records with lithology or lithology type 'garbagexyz' in the database",
+      ],
+    });
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({ base_name: 'Dinosauria' });
+    await searchOccurrencesTool.handler(input, ctx);
+
+    const notice = String(getEnrichment(ctx).notice);
+    expect(notice).toContain('PBDB could not use part of this query');
+    expect(notice).toContain("lithology or lithology type 'garbagexyz'");
+    expect(notice).toContain('That filter did not constrain the result');
+  });
+
+  it('separates an unmatched taxon name from a genuinely empty result (#12)', async () => {
+    stubRows([], {
+      recordsFound: 0,
+      warnings: [
+        "The name 'Tyrannosauruss' did not match the currently accepted variant of any name in the taxonomy table",
+      ],
+    });
+    const typoCtx = createMockContext({ errors: searchOccurrencesTool.errors });
+    await searchOccurrencesTool.handler(
+      searchOccurrencesTool.input.parse({ base_name: 'Tyrannosauruss' }),
+      typoCtx,
     );
-    expect(String(getEnrichment(ctx).notice)).toMatch(/more may match/);
+    const typoNotice = String(getEnrichment(typoCtx).notice);
+    expect(typoNotice).toContain("The name 'Tyrannosauruss' did not match");
+
+    stubRows([], { recordsFound: 0 });
+    const emptyCtx = createMockContext({ errors: searchOccurrencesTool.errors });
+    await searchOccurrencesTool.handler(
+      searchOccurrencesTool.input.parse({ base_name: 'Tyrannosaurus', interval: 'Cambrian' }),
+      emptyCtx,
+    );
+    const emptyNotice = String(getEnrichment(emptyCtx).notice);
+    expect(emptyNotice).not.toContain('did not match');
+    expect(emptyNotice).not.toContain('PBDB could not use');
+    expect(emptyNotice).toContain('No occurrences matched Tyrannosaurus in Cambrian');
+    // The two notices must be distinguishable — that is the whole point of the fix.
+    expect(typoNotice).not.toBe(emptyNotice);
   });
 
   it('rejects an unfiltered call before hitting PBDB (missing_filter)', async () => {
@@ -155,7 +228,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     let captured: OccurrenceFilter | undefined;
     searchOccurrences.mockImplementation((filter: OccurrenceFilter) => {
       captured = filter;
-      return rowGen([tRex]);
+      return { rows: rowGen([tRex]), meta: {} };
     });
     const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
     for (const raw of [
@@ -245,7 +318,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     let captured: OccurrenceFilter | undefined;
     searchOccurrences.mockImplementation((filter: OccurrenceFilter) => {
       captured = filter;
-      return rowGen([tRex]);
+      return { rows: rowGen([tRex]), meta: {} };
     });
     const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
     const input = searchOccurrencesTool.input.parse({ collection_no: 11917 });
@@ -258,7 +331,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     let captured: OccurrenceFilter | undefined;
     searchOccurrences.mockImplementation((filter: OccurrenceFilter) => {
       captured = filter;
-      return rowGen([]);
+      return { rows: rowGen([]), meta: {} };
     });
     const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
     const input = searchOccurrencesTool.input.parse({
@@ -374,20 +447,21 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
     expect(instance.registerTable).toHaveBeenCalledOnce();
     // The spill notice points the agent at the dataframe query tool.
     expect(String(getEnrichment(ctx).notice)).toMatch(/paleobiology_dataframe_query/);
-    // 400 rows < the 500-row cap, so this IS the complete matching set — no truncation claim.
-    expect(String(getEnrichment(ctx).notice)).not.toMatch(/more may match/);
+    // The staged 400 rows ARE every match upstream — claim no shortfall.
+    expect(getEnrichment(ctx).totalCount).toBe(400);
+    expect(String(getEnrichment(ctx).notice)).not.toMatch(/unstaged/);
   });
 
-  it('discloses that a spilled set is a capped page when the pull hits the cap', async () => {
-    // Yield exactly `limit` rows so the staged count equals the per-call cap — the
-    // canvas holds a truncated page, not every match, and the notice must say so
-    // instead of implying the staged table is the full set (issue #6).
+  it('names how many matches the cap left unstaged on a spilled set (#6, #13)', async () => {
+    // Yield exactly `limit` rows so the staged count equals the per-call cap while
+    // PBDB reports many more — the canvas holds a page, not the set, and the notice
+    // must state the exact shortfall rather than implying the table is complete.
     const capped = Array.from({ length: 500 }, (_, i) => ({
       ...tRex,
       occurrence_no: i + 1,
       formation: 'X'.repeat(300),
     }));
-    stubRows(capped);
+    stubRows(capped, { recordsFound: 4170 });
     const instance = makeFakeInstance('canvasCap03');
     getCanvas.mockReturnValue({ acquire: vi.fn().mockResolvedValue(instance) });
 
@@ -397,9 +471,12 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
 
     expect(result.spilled).toBe(true);
     expect(result.row_count).toBe(500);
-    const notice = String(getEnrichment(ctx).notice);
-    expect(notice).toMatch(/per-call cap/);
-    expect(notice).toMatch(/more may match/);
+    const enr = getEnrichment(ctx);
+    expect(enr.totalCount).toBe(4170);
+    const notice = String(enr.notice);
+    expect(notice).toContain('Staged 500 matching occurrences on canvas canvasCap03');
+    expect(notice).toContain('That staged set is 500 of 4170 matching');
+    expect(notice).toContain('left 3670 unstaged');
   });
 
   it('sanitizes a hyphenated canvas id into a legal SQL table identifier', async () => {

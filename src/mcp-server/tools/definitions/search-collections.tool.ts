@@ -8,6 +8,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { emitNotice, ignoredFilterNotice, joinNotices } from '@/mcp-server/tools/pbdb-notices.js';
 import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
 import type { CollectionFilter, EnvironmentFilter } from '@/services/pbdb/types.js';
 import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
@@ -175,11 +176,11 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
     totalCount: z
       .number()
       .optional()
-      .describe('Localities returned in this page (set when the page was not truncated).'),
+      .describe('Total localities matching the filters upstream, across all pages.'),
     truncated: z
       .boolean()
       .optional()
-      .describe('True when the page filled to the limit — advance offset for more.'),
+      .describe('True when localities remain past this page — advance offset for more.'),
     shown: z
       .number()
       .optional()
@@ -188,7 +189,12 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
       .number()
       .optional()
       .describe('The per-page limit that was applied (set when truncated).'),
-    notice: z.string().optional().describe('Guidance when no locality matched the filters.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when no locality matched, when localities remain past this page, or when a filter value was not recognized and ignored.',
+      ),
     attribution: z.string().describe('CC-BY data attribution for the Paleobiology Database.'),
   },
   enrichmentTrailer: {
@@ -256,22 +262,49 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
 
     const result = await getPbdbService().searchCollections(filter, ctx);
     ctx.enrich({ attribution: PBDB_ATTRIBUTION });
-    ctx.log.info('Collection search', { shown: result.shown, truncated: result.truncated });
+    ctx.log.info('Collection search', {
+      shown: result.shown,
+      total: result.total,
+      truncated: result.truncated,
+      warnings: result.warnings?.length ?? 0,
+    });
+
+    const total = result.total ?? result.shown;
+    ctx.enrich.total(total);
+
+    // PBDB drops a filter value it does not recognize and answers 200 with the
+    // rest of the query applied — for `lithology` that is the FULL unfiltered set.
+    // Disclose it or the agent reads an unfiltered result as a match.
+    const ignored = ignoredFilterNotice(result.warnings);
 
     if (result.shown === 0) {
-      ctx.enrich.total(0);
-      ctx.enrich.notice(
-        'No localities matched the filters. Widen the interval or bounding box, or relax the formation/' +
-          'lithology/environment filter.',
+      // An empty page past the end of a non-empty match set is a paging mistake,
+      // not a too-narrow filter — saying "widen the filters" would send the agent
+      // to fix something that was never wrong.
+      const pagedPastEnd = total > 0 && result.offset >= total;
+      emitNotice(
+        ctx,
+        ignored,
+        pagedPastEnd
+          ? `Offset ${result.offset} is past the end of the ${total} matching localities. ` +
+              `Lower offset to below ${total} — the filters themselves matched.`
+          : 'No localities matched the filters. Widen the interval or bounding box, or relax the formation/' +
+              'lithology/environment filter.',
       );
     } else if (result.truncated) {
+      // Page numbers come off the same offset the service derived `truncated` from.
+      const first = result.offset + 1;
+      const last = result.offset + result.shown;
       ctx.enrich.truncated({
         shown: result.shown,
         cap: result.cap,
-        guidance: `Showing ${result.shown} localities (the page limit). Advance offset by ${result.cap} for the next page.`,
+        guidance: joinNotices(
+          ignored,
+          `Showing localities ${first}–${last} of ${total}. Advance offset to ${last} for the next page.`,
+        ),
       });
     } else {
-      ctx.enrich.total(result.shown);
+      emitNotice(ctx, ignored);
     }
 
     return { collections: result.collections };

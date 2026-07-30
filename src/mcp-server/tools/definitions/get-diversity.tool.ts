@@ -8,6 +8,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { emitNotice, ignoredFilterNotice } from '@/mcp-server/tools/pbdb-notices.js';
 import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
 import type { DiversityFilter } from '@/services/pbdb/types.js';
 import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
@@ -97,7 +98,9 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     notice: z
       .string()
       .optional()
-      .describe('Guidance when the clade or span produced no bins, plus the sampling-bias caveat.'),
+      .describe(
+        'Guidance when the clade or span produced no bins, or when the taxon name could not be resolved and was ignored.',
+      ),
     attribution: z.string().describe('CC-BY data attribution for the Paleobiology Database.'),
   },
   enrichmentTrailer: {
@@ -131,20 +134,28 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     if (input.max_ma != null) filter.maxMa = input.max_ma;
     if (input.min_ma != null) filter.minMa = input.min_ma;
 
-    const bins = await getPbdbService().getDiversity(filter, ctx);
+    const { bins, warnings } = await getPbdbService().getDiversity(filter, ctx);
     // PBDB returns bins newest-first; present them oldest-first (highest max_ma
     // first) so the curve reads as a timeline and matches the output schema.
     bins.sort((a, b) => b.max_ma - a.max_ma);
     ctx.enrich({ attribution: PBDB_ATTRIBUTION });
     ctx.enrich.total(bins.length);
-    ctx.log.info('Diversity curve', { base_name: input.base_name, bins: bins.length });
+    ctx.log.info('Diversity curve', {
+      base_name: input.base_name,
+      bins: bins.length,
+      warnings: warnings?.length ?? 0,
+    });
 
-    if (bins.length === 0) {
-      ctx.enrich.notice(
-        `No diversity bins for "${input.base_name}" over the requested span. Verify the taxon name with ` +
-          'paleobiology_get_taxon and confirm the interval/Ma range overlaps its fossil range.',
-      );
-    }
+    // An unresolvable base_name and a clade with no data in the span both return
+    // zero bins; only PBDB's warning tells them apart.
+    emitNotice(
+      ctx,
+      ignoredFilterNotice(warnings),
+      bins.length === 0
+        ? `No diversity bins for "${input.base_name}" over the requested span. Verify the taxon name with ` +
+            'paleobiology_get_taxon and confirm the interval/Ma range overlaps its fossil range.'
+        : undefined,
+    );
     return { bins };
   },
 

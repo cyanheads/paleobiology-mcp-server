@@ -151,12 +151,47 @@ export interface PbdbCollectionRecord {
   state?: string;
 }
 
-/** Envelope every PBDB JSON response shares. */
+/**
+ * Envelope every PBDB JSON response shares.
+ *
+ * `records_found` / `records_returned` appear only when the request carried
+ * `rowcount`. `warnings[]` rides ALONGSIDE a successful result (HTTP 200 with a
+ * full `records[]`) — unlike `errors[]`, which replaces one.
+ */
 export interface PbdbEnvelope<T> {
   elapsed_time?: number;
   errors?: string[];
   records?: T[];
+  records_found?: number;
+  records_returned?: number;
   warnings?: string[];
+}
+
+/**
+ * The non-record metadata a PBDB envelope carries.
+ *
+ * `warnings` is PBDB's channel for "I ignored something you sent" — an
+ * unrecognized `lithology` value is dropped from the query and the FULL
+ * unfiltered set comes back with HTTP 200, so a discarded warning reads as a
+ * genuine match. An unmatched taxon name warns too, which is what separates
+ * "your name was a typo" from "valid query, nothing overlapped".
+ *
+ * `recordsFound` is the true upstream match count, independent of
+ * `limit`/`offset`. `recordsReturned` is PBDB's own count for the page and is
+ * NOT trustworthy — PBDB reports it as `limit - (offset - records_found)`, which
+ * goes NEGATIVE once `offset` runs past the end (offset 200 of 84 matches →
+ * `records_returned: -116`). Count the parsed rows instead.
+ */
+export interface PbdbSearchMeta {
+  recordsFound?: number;
+  recordsReturned?: number;
+  warnings?: string[];
+}
+
+/** A parsed PBDB envelope — the records plus the envelope metadata alongside them. */
+export interface PbdbResponse<T> {
+  meta: PbdbSearchMeta;
+  records: T[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -341,10 +376,41 @@ export interface CollectionResult {
   /** The limit that was applied. */
   cap: number;
   collections: Collection[];
+  /** Offset this page started at. */
+  offset: number;
   /** Number of rows returned in this page. */
   shown: number;
-  /** True when the page filled to the requested limit (more may exist). */
+  /** True upstream match count (PBDB `records_found`), independent of limit/offset. */
+  total?: number;
+  /** True when records remain past this page — `offset + shown < total`. */
   truncated: boolean;
+  /** Non-fatal upstream warnings — a filter value PBDB did not recognize and ignored. */
+  warnings?: string[];
+}
+
+/** A diversity curve plus any non-fatal upstream warnings. */
+export interface DiversityResult {
+  bins: DiversityBin[];
+  warnings?: string[];
+}
+
+/**
+ * A streamed occurrence search: the row generator plus the upstream metadata
+ * that has no channel out of it.
+ *
+ * `searchOccurrences` yields rows so the canvas `spillover()` helper can drain
+ * them, but a generator's RETURN value is unreachable — `spillover()` reads
+ * `next.done` and drops `next.value`, and a `for await` loop does the same. The
+ * true match count and PBDB's warnings therefore ride on this handle, which the
+ * caller holds across the drain.
+ *
+ * `meta` is filled in before the first row is yielded (the service awaits the
+ * whole envelope, then yields), so it is populated once iteration has started —
+ * read it after draining.
+ */
+export interface OccurrenceSearch {
+  meta: PbdbSearchMeta;
+  rows: AsyncGenerator<Occurrence>;
 }
 
 /** The CC-BY attribution string surfaced as provenance on every data response. */
