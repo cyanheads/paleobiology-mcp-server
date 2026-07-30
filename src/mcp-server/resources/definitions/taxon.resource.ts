@@ -11,6 +11,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { shapeTaxon } from '@/mcp-server/tools/definitions/get-taxon.tool.js';
 import { getPbdbService, isNotFoundError } from '@/services/pbdb/pbdb-service.js';
 import type { Taxon } from '@/services/pbdb/types.js';
+import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
 
 export const taxonResource = resource('paleobiology://taxon/{taxon_no}', {
   name: 'Taxon record',
@@ -18,7 +19,8 @@ export const taxonResource = resource('paleobiology://taxon/{taxon_no}', {
   description:
     'Read one taxon by its integer taxon_no (from paleobiology_get_taxon, or accepted_no on an occurrence ' +
     'row). Returns the accepted name, rank, higher classification, immediate parent, fossil occurrence ' +
-    'count, and first/last appearance (FAD/LAD) range in millions of years.',
+    'count, first/last appearance (FAD/LAD) range in millions of years, and an attribution field ' +
+    'carrying the CC BY 4.0 source credit.',
   mimeType: 'application/json',
   params: z.object({
     taxon_no: z
@@ -51,6 +53,9 @@ export const taxonResource = resource('paleobiology://taxon/{taxon_no}', {
     }
     // Shape through the same helper as paleobiology_get_taxon so this resource is a
     // true mirror of the tool — FAD/LAD lifted top-level, identical TaxonOutput shape.
-    return shapeTaxon(taxon);
+    // The tool credits PBDB through its `attribution` enrichment; resources have no
+    // enrichment mechanism, so the CC BY credit rides as a plain payload field and
+    // every PBDB-returning surface self-credits.
+    return { ...shapeTaxon(taxon), attribution: PBDB_ATTRIBUTION };
   },
 });

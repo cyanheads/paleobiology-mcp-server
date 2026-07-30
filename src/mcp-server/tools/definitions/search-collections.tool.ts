@@ -98,36 +98,48 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
       .number()
       .nonnegative()
       .optional()
-      .describe('Older age bound in millions of years ago. Pair with min_ma.'),
+      .describe(
+        'Older age bound in millions of years ago. When paired with min_ma it must be strictly greater — max_ma is the deeper-time end of the window.',
+      ),
     min_ma: z
       .number()
       .nonnegative()
       .optional()
-      .describe('Younger age bound in millions of years ago. Pair with max_ma.'),
+      .describe(
+        'Younger age bound in millions of years ago. When paired with max_ma it must be strictly smaller — min_ma is the nearer-to-present end of the window.',
+      ),
     lngmin: z
       .number()
       .min(-180)
       .max(180)
       .optional()
-      .describe('Western edge of the bounding box, decimal degrees (−180…180).'),
+      .describe(
+        'Western edge of the bounding box, decimal degrees (−180…180). Longitude is a closed pair — supply lngmax with it or neither.',
+      ),
     lngmax: z
       .number()
       .min(-180)
       .max(180)
       .optional()
-      .describe('Eastern edge of the bounding box, decimal degrees (−180…180).'),
+      .describe(
+        'Eastern edge of the bounding box, decimal degrees (−180…180). Longitude is a closed pair — supply lngmin with it or neither.',
+      ),
     latmin: z
       .number()
       .min(-90)
       .max(90)
       .optional()
-      .describe('Southern edge of the bounding box, decimal degrees (−90…90).'),
+      .describe(
+        'Southern edge of the bounding box, decimal degrees (−90…90). Valid on its own — a lone latitude edge filters as a half-plane.',
+      ),
     latmax: z
       .number()
       .min(-90)
       .max(90)
       .optional()
-      .describe('Northern edge of the bounding box, decimal degrees (−90…90).'),
+      .describe(
+        'Northern edge of the bounding box, decimal degrees (−90…90). Valid on its own — a lone latitude edge filters as a half-plane.',
+      ),
     formation: z
       .string()
       .optional()
@@ -190,6 +202,20 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
       recovery:
         'Provide at least one filter: base_name, an interval or max_ma/min_ma range, a lng/lat bounding box, a formation or lithology, or an environment — then retry.',
     },
+    {
+      reason: 'incomplete_bbox',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'Exactly one of lngmin/lngmax was supplied — a longitude box needs both edges.',
+      recovery:
+        'Supply the other longitude edge (lngmin AND lngmax) or drop the one you sent. A lone latmin or latmax is fine on its own.',
+    },
+    {
+      reason: 'inverted_ma_range',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'min_ma was greater than or equal to max_ma — the age window is inverted or empty.',
+      recovery:
+        'Ages count backwards from the present: set max_ma to the older bound and min_ma to the younger one, so min_ma is strictly less than max_ma (e.g. max_ma 100, min_ma 66).',
+    },
   ],
 
   async handler(input, ctx) {
@@ -198,6 +224,20 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
         'missing_filter',
         'paleobiology_search_collections needs at least one filter (taxon, geologic time, place, formation, lithology, or environment) — PBDB rejects an unfiltered collection query.',
         { ...ctx.recoveryFor('missing_filter') },
+      );
+    }
+    if ((input.lngmin == null) !== (input.lngmax == null)) {
+      throw ctx.fail(
+        'incomplete_bbox',
+        `A longitude box needs both edges — got ${input.lngmin != null ? 'lngmin' : 'lngmax'} alone.`,
+        { ...ctx.recoveryFor('incomplete_bbox') },
+      );
+    }
+    if (input.max_ma != null && input.min_ma != null && input.min_ma >= input.max_ma) {
+      throw ctx.fail(
+        'inverted_ma_range',
+        `min_ma (${input.min_ma}) must be strictly less than max_ma (${input.max_ma}).`,
+        { ...ctx.recoveryFor('inverted_ma_range') },
       );
     }
 

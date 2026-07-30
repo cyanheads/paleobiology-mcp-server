@@ -3,8 +3,10 @@
  * the path that must sanitize EVERY error fetchWithTimeout throws into a clean
  * typed domain error that leaks NONE of the raw upstream plumbing (statusCode,
  * statusText, responseBody, requestId, internal URL) to the agent. Covers both
- * not-found reclassification (HTTP 400/404 + PBDB's HTTP-200-with-errors[] quirk)
- * AND the non-not-found upstream failures (403/429/5xx/timeout/network) that the
+ * not-found reclassification (HTTP 404, the taxa/single-only 400, and PBDB's
+ * HTTP-200-with-errors[] quirk), the parameter-400s on every other endpoint that
+ * must surface as InvalidParams rather than masquerade as "no match", AND the
+ * non-not-found upstream failures (403/429/5xx/timeout/network) that the
  * framework would otherwise forward verbatim. Drives the REAL PbdbService with a
  * mocked fetchWithTimeout, so the genuine sanitizeUpstreamError / parseEnvelope
  * code runs — no network.
@@ -122,27 +124,104 @@ describe('PbdbService not-found reclassification', () => {
     vi.restoreAllMocks();
   });
 
-  it('reclassifies a 400 + PBDB errors[] body into a clean NotFound (no raw status leak)', async () => {
+  it('reclassifies a taxa/single 400 + PBDB errors[] body into a clean NotFound (no raw status leak)', async () => {
+    // `taxa/single` is the one endpoint that answers an unmatched lookup with a
+    // 400 — a name failing PBDB's scientific-name pattern. That stays not-found.
     fetchWithTimeout.mockRejectedValue(
-      httpError(400, JSON.stringify({ errors: ["Unknown taxon name 'Bogusname'"] })),
+      httpError(400, JSON.stringify({ errors: ["Invalid taxon name 'Bogus name foo bar'"] })),
     );
     const ctx = createMockContext();
 
     const err = (await service
-      .getTaxon({ name: 'Bogusname', showChildren: false }, ctx)
+      .getTaxon({ name: 'Bogus name foo bar', showChildren: false }, ctx)
       .catch((e) => e)) as McpError;
 
     expect(err).toBeInstanceOf(McpError);
     expect(isNotFoundError(err)).toBe(true);
     expect(err.code).toBe(JsonRpcErrorCode.NotFound);
     // The PBDB error message is preserved...
-    expect(err.message).toMatch(/Unknown taxon name/);
+    expect(err.message).toMatch(/Invalid taxon name/);
     // ...but the raw HTTP plumbing is stripped — only the reason remains.
     expect(err.data).toEqual({ reason: 'pbdb_not_found' });
     for (const field of LEAK_FIELDS) {
       expect(err.data).not.toHaveProperty(field);
     }
     expectNoLeak(err);
+  });
+
+  it('classifies a list-endpoint parameter 400 as InvalidParams, NOT as not-found', async () => {
+    // Every endpoint other than taxa/single reserves 400 + errors[] for a
+    // malformed PARAMETER. Blanket-mapping those to not-found told the agent its
+    // query matched nothing when PBDB had in fact refused to run it.
+    fetchWithTimeout.mockRejectedValue(
+      httpError(
+        400,
+        JSON.stringify({
+          errors: ["you must specify both of 'lngmin' and 'lngmax' if you specify either of them"],
+        }),
+      ),
+    );
+    const ctx = createMockContext();
+
+    const err = (await (async () => {
+      try {
+        for await (const _ of service.searchOccurrences({ limit: 100, lngmin: -130 }, ctx));
+        return;
+      } catch (e) {
+        return e as McpError;
+      }
+    })()) as McpError;
+
+    expect(err).toBeInstanceOf(McpError);
+    expect(isNotFoundError(err)).toBe(false);
+    expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+    // PBDB's own rejection text is preserved so the agent can act on it...
+    expect(err.message).toMatch(/lngmin.*lngmax/);
+    expect(err.data).toMatchObject({ reason: 'pbdb_invalid_parameter' });
+    // ...with none of the raw upstream plumbing.
+    expectNoLeak(err);
+  });
+
+  it('classifies a diversity parameter 400 as InvalidParams (inverted Ma range)', async () => {
+    fetchWithTimeout.mockRejectedValue(
+      httpError(
+        400,
+        JSON.stringify({
+          errors: ["The value of 'min_ma' is greater than or equal to the value of 'max_ma'."],
+        }),
+      ),
+    );
+    const ctx = createMockContext();
+    const err = (await service
+      .getDiversity(
+        { baseName: 'Tyrannosaurus', count: 'genera', resolution: 'period', maxMa: 66, minMa: 100 },
+        ctx,
+      )
+      .catch((e) => e)) as McpError;
+
+    expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(err.data).toMatchObject({ reason: 'pbdb_invalid_parameter' });
+    expect(isNotFoundError(err)).toBe(false);
+  });
+
+  it('marks a single-record lookup 404 as an expected status so it logs at debug', async () => {
+    // A missing record is an ordinary outcome for taxa/single and occs/single —
+    // the framework logs listed statuses at debug instead of error. List
+    // endpoints declare none: a non-2xx there is a genuine fault.
+    fetchWithTimeout.mockResolvedValue(okJson({ records: [{ occurrence_no: '1' }] }));
+    const ctx = createMockContext();
+    await service.getOccurrence(139292, ctx);
+    expect(fetchWithTimeout.mock.calls[0]?.[3]).toMatchObject({ expectedStatuses: [404] });
+
+    fetchWithTimeout.mockReset();
+    fetchWithTimeout.mockResolvedValue(okJson({ records: [{ taxon_no: '1' }] }));
+    await service.getTaxon({ name: 'Tyrannosaurus', showChildren: false }, ctx);
+    expect(fetchWithTimeout.mock.calls[0]?.[3]).toMatchObject({ expectedStatuses: [400, 404] });
+
+    fetchWithTimeout.mockReset();
+    fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
+    for await (const _ of service.searchOccurrences({ limit: 10, baseName: 'Canis' }, ctx));
+    expect(fetchWithTimeout.mock.calls[0]?.[3]).toMatchObject({ expectedStatuses: [] });
   });
 
   it('reclassifies a 404 (unknown id) into a clean NotFound', async () => {

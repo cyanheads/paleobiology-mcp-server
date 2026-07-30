@@ -93,6 +93,56 @@ describe('paleobiology_search_collections', () => {
     expect(searchCollections).not.toHaveBeenCalled();
   });
 
+  it('rejects a half-specified longitude box before hitting PBDB (incomplete_bbox)', async () => {
+    const ctx = createMockContext({ errors: searchCollectionsTool.errors });
+    for (const raw of [
+      { base_name: 'Dinosauria', lngmin: -130 },
+      { base_name: 'Dinosauria', lngmax: -60 },
+    ]) {
+      const input = searchCollectionsTool.input.parse(raw);
+      const err = (await searchCollectionsTool.handler(input, ctx).catch((e) => e)) as {
+        code: number;
+        data?: Record<string, unknown>;
+      };
+      expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(err.data?.reason).toBe('incomplete_bbox');
+      expect(JSON.stringify(err.data)).toMatch(/lngmin AND lngmax/);
+    }
+    expect(searchCollections).not.toHaveBeenCalled();
+  });
+
+  it('rejects an inverted or empty Ma window before hitting PBDB (inverted_ma_range)', async () => {
+    const ctx = createMockContext({ errors: searchCollectionsTool.errors });
+    for (const raw of [
+      { base_name: 'Dinosauria', max_ma: 66, min_ma: 100 },
+      { base_name: 'Dinosauria', max_ma: 66, min_ma: 66 },
+    ]) {
+      const input = searchCollectionsTool.input.parse(raw);
+      const err = (await searchCollectionsTool.handler(input, ctx).catch((e) => e)) as {
+        code: number;
+        data?: Record<string, unknown>;
+      };
+      expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(err.data?.reason).toBe('inverted_ma_range');
+      expect(JSON.stringify(err.data)).toMatch(/strictly less than max_ma/);
+    }
+    expect(searchCollections).not.toHaveBeenCalled();
+  });
+
+  it('accepts a lone latitude edge and a well-ordered Ma window', async () => {
+    searchCollections.mockResolvedValue(result([hellCreek]));
+    const ctx = createMockContext({ errors: searchCollectionsTool.errors });
+    for (const raw of [
+      { base_name: 'Dinosauria', latmin: 40 },
+      { base_name: 'Dinosauria', max_ma: 100, min_ma: 66 },
+    ]) {
+      const input = searchCollectionsTool.input.parse(raw);
+      await expect(searchCollectionsTool.handler(input, ctx)).resolves.toMatchObject({
+        collections: [expect.objectContaining({ collection_no: 11917 })],
+      });
+    }
+  });
+
   it('discloses truncation (shown/cap) when the page fills to the limit', async () => {
     const rows = Array.from({ length: 2 }, (_, i) => ({ ...hellCreek, collection_no: i + 1 }));
     searchCollections.mockResolvedValue(result(rows, 2, true));

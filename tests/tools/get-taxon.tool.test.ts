@@ -4,8 +4,8 @@
  * upstream-4xx → clean-not-found reclassification (asserting NO statusCode /
  * requestId / responseBody leaks onto the agent-facing error), show_children,
  * sparse upstream payloads, the required-field fail-loud (a taxon missing
- * accepted_name or rank is rejected, not emitted), format() parity, and
- * output-schema conformance.
+ * accepted_name or rank is rejected, not emitted), the CC BY attribution
+ * enrichment, format() parity, and output-schema conformance.
  *
  * The PBDB HTTP layer is never hit: getPbdbService() is mocked to a per-test
  * fake while isNotFoundError() (the real reclassification predicate) is kept
@@ -14,7 +14,7 @@
  */
 
 import { JsonRpcErrorCode, McpError, notFound } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Taxon } from '@/services/pbdb/types.js';
 
@@ -71,6 +71,18 @@ describe('paleobiology_get_taxon', () => {
       expect.objectContaining({ name: 'Tyrannosaurus', showChildren: false }),
       ctx,
     );
+  });
+
+  it('emits the CC BY attribution enrichment, like every other PBDB-backed tool', async () => {
+    getTaxon.mockResolvedValue(fullTaxon());
+    const ctx = createMockContext({ errors: getTaxonTool.errors });
+    const input = getTaxonTool.input.parse({ name: 'Tyrannosaurus' });
+    await getTaxonTool.handler(input, ctx);
+
+    expect(String(getEnrichment(ctx).attribution)).toMatch(/Paleobiology Database/);
+    expect(String(getEnrichment(ctx).attribution)).toMatch(/CC BY 4\.0/);
+    // The trailer label is what renders it as `**Source:**` for content[]-only clients.
+    expect(getTaxonTool.enrichmentTrailer?.attribution?.label).toBe('Source');
   });
 
   it('forwards taxon_no and show_children to the service', async () => {

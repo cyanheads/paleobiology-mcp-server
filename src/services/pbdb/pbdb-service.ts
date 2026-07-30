@@ -15,14 +15,18 @@
  *    direct macro-zones.
  *  - `resolution: 'age'` maps to PBDB `time_reso=stage` (PBDB's token for the
  *    stage/age level); `period`/`epoch` pass through.
- *  - A not-found lookup returns HTTP 400 (invalid/unmatched taxon name) or 404
- *    (unknown id), each with an `errors[]` body — reclassified to a clean
- *    NotFound in {@link sanitizeUpstreamError}; some 200+`errors[]` cases are
- *    caught in {@link parseEnvelope}. Both surface as the caller's typed not-found.
- *    Every other upstream failure (403/429/5xx/timeout/network) is also routed
- *    through {@link sanitizeUpstreamError}, which strips the raw upstream plumbing
- *    (statusCode/responseBody/requestId/URL) the framework would otherwise forward
- *    to the client, re-minting a same-code error with leak-free `data`.
+ *  - A not-found lookup returns HTTP 404 (unknown id, and an unmatched taxon
+ *    name) or — on `taxa/single` only — HTTP 400 for a name that isn't a valid
+ *    scientific name, each with an `errors[]` body. Both are reclassified to a
+ *    clean NotFound in {@link sanitizeUpstreamError}; some 200+`errors[]` cases
+ *    are caught in {@link parseEnvelope}. All surface as the caller's typed
+ *    not-found. Every other endpoint reserves HTTP 400 + `errors[]` for a
+ *    malformed PARAMETER, which surfaces as `InvalidParams` carrying PBDB's own
+ *    rejection text. Every other upstream failure (403/429/5xx/timeout/network)
+ *    is also routed through {@link sanitizeUpstreamError}, which strips the raw
+ *    upstream plumbing (statusCode/responseBody/requestId/URL) the framework
+ *    would otherwise forward to the client, re-minting a same-code error with
+ *    leak-free `data`.
  * @module services/pbdb/pbdb-service
  */
 
@@ -119,12 +123,21 @@ export class PbdbService {
 
   // ── Request plumbing ───────────────────────────────────────────────────────
 
-  /** Issue a GET against a PBDB endpoint, with retry + timeout. Returns parsed records. */
+  /**
+   * Issue a GET against a PBDB endpoint, with retry + timeout. Returns parsed records.
+   *
+   * `expectedStatuses` lists the non-2xx statuses that are an ordinary outcome for
+   * this endpoint rather than a fault — a single-record lookup answering "no such
+   * record" with a 404. The framework logs those at `debug` instead of `error`
+   * (the thrown, status-mapped McpError is unchanged), so an empty result stops
+   * producing error-level noise.
+   */
   private get<T>(
     path: string,
     params: Record<string, string | number | undefined>,
     ctx: Context,
     operation: string,
+    expectedStatuses: number[] = [],
   ): Promise<T[]> {
     const url = new URL(`${this.baseUrl}/${path}.json`);
     url.searchParams.set('vocab', 'pbdb');
@@ -141,7 +154,10 @@ export class PbdbService {
       async () => {
         let response: Response;
         try {
-          response = await fetchWithTimeout(url, this.timeoutMs, reqCtx, { signal: ctx.signal });
+          response = await fetchWithTimeout(url, this.timeoutMs, reqCtx, {
+            signal: ctx.signal,
+            expectedStatuses,
+          });
         } catch (err) {
           // fetchWithTimeout throws a status-mapped McpError on every non-2xx, plus
           // a Timeout/ServiceUnavailable/InternalError on timeout / network / abort.
@@ -236,6 +252,8 @@ export class PbdbService {
       { id: `occ:${occurrenceNo}`, show: SHOW_BLOCKS.occurrences },
       ctx,
       'getOccurrence',
+      // An unknown occurrence_no is an ordinary empty result, not a fault.
+      [404],
     );
     const rec = records[0];
     if (!rec) {
@@ -260,6 +278,9 @@ export class PbdbService {
       { name: args.name, id: idParam, show: SHOW_BLOCKS.taxa },
       ctx,
       'getTaxon',
+      // `taxa/single` answers an unknown id or unmatched name with 404 and a name
+      // that isn't a valid scientific name with 400 — both ordinary "no match".
+      [400, 404],
     );
     const rec = records[0];
     if (!rec) {
@@ -536,17 +557,30 @@ function upstreamConditionFor(code: JsonRpcErrorCode): string {
 }
 
 /**
+ * Operations whose PBDB endpoint answers an unmatched lookup with HTTP 400 +
+ * `errors[]` rather than a 404. Only `taxa/single` does this, and only for a name
+ * that fails PBDB's scientific-name pattern (`Invalid taxon name '…'`); every
+ * other endpoint reserves 400 for a malformed PARAMETER, so a 400 there is a
+ * parameter error and must never masquerade as a missing record.
+ */
+const OPERATIONS_WITH_NOT_FOUND_400 = new Set(['getTaxon']);
+
+/**
  * Sanitize an error thrown by {@link fetchWithTimeout} into a clean, typed domain
  * error that leaks none of the raw upstream plumbing.
  *
  * Detection is STRUCTURAL — `err instanceof McpError` + its `.code`/`.data`, never
- * a string match on the message. Two outcomes:
- *  - PBDB not-found: a `NotFound`-coded error (HTTP 404 → unknown id) or a 400-class
- *    error (`InvalidParams`/`ValidationError` → unmatched name) whose captured
- *    `responseBody` reads as a PBDB `errors[]` body → a clean {@link notFound} the
- *    caller remaps to its typed contract reason. PBDB's own error text is preserved
- *    in the message; the raw `data` (statusCode/statusText/responseBody/requestId)
- *    is dropped, replaced by `{ reason: 'pbdb_not_found' }`.
+ * a string match on the message. Three outcomes:
+ *  - PBDB not-found: a `NotFound`-coded error (HTTP 404 → unknown id or unmatched
+ *    name), or a parameter rejection on one of {@link OPERATIONS_WITH_NOT_FOUND_400}
+ *    → a clean {@link notFound} the caller remaps to its typed contract reason.
+ *    PBDB's own error text is preserved in the message; the raw `data`
+ *    (statusCode/statusText/responseBody/requestId) is dropped, replaced by
+ *    `{ reason: 'pbdb_not_found' }`.
+ *  - PBDB parameter rejection anywhere else: an `InvalidParams` McpError carrying
+ *    PBDB's own rejection text, so a malformed filter reads as a bad parameter
+ *    instead of "no match" or "upstream unavailable". The tool boundary guards
+ *    should make this unreachable; it is the honest fallback if one is missed.
  *  - Anything else (403/429/5xx/timeout/network): a freshly-minted McpError of the
  *    SAME code (so withRetry's transient classification is preserved) with a
  *    generic, operation-scoped message and leak-free `data` (`{ operation }` only —
@@ -559,8 +593,20 @@ function upstreamConditionFor(code: JsonRpcErrorCode): string {
 function sanitizeUpstreamError(err: unknown, operation: string): unknown {
   if (!(err instanceof McpError)) return err;
 
-  if (err.code === JsonRpcErrorCode.NotFound || isPbdbNotFoundBody(err)) {
+  if (err.code === JsonRpcErrorCode.NotFound) {
     return notFound(pbdbNotFoundMessage(err, operation), { reason: 'pbdb_not_found' });
+  }
+
+  if (isPbdbParameterRejection(err)) {
+    if (OPERATIONS_WITH_NOT_FOUND_400.has(operation)) {
+      return notFound(pbdbNotFoundMessage(err, operation), { reason: 'pbdb_not_found' });
+    }
+    return new McpError(
+      JsonRpcErrorCode.InvalidParams,
+      `PBDB rejected the ${operation} query: ${pbdbErrorStrings(err).join('; ')}`,
+      { operation, reason: 'pbdb_invalid_parameter' },
+      { cause: err },
+    );
   }
 
   return new McpError(
@@ -573,11 +619,12 @@ function sanitizeUpstreamError(err: unknown, operation: string): unknown {
 
 /**
  * True when a 400-class McpError's captured `responseBody` is a PBDB JSON body
- * carrying a non-empty `errors[]` array — PBDB's signal for an unmatched/invalid
- * lookup. Structural: gated on the `InvalidParams`/`ValidationError` codes the
- * framework maps HTTP 400/422 to, then parses the body.
+ * carrying a non-empty `errors[]` array — PBDB's signal that it refused the
+ * query as written. Structural: gated on the `InvalidParams`/`ValidationError`
+ * codes the framework maps HTTP 400/422 to, then parses the body. What that
+ * rejection MEANS is endpoint-specific; {@link sanitizeUpstreamError} decides.
  */
-function isPbdbNotFoundBody(err: McpError): boolean {
+function isPbdbParameterRejection(err: McpError): boolean {
   if (
     err.code !== JsonRpcErrorCode.InvalidParams &&
     err.code !== JsonRpcErrorCode.ValidationError

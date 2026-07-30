@@ -7,6 +7,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
 import type { DiversityFilter } from '@/services/pbdb/types.js';
 import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
@@ -74,14 +75,14 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
       .nonnegative()
       .optional()
       .describe(
-        'Older bound of the span in millions of years ago. Pair with min_ma; alternative to interval.',
+        'Older bound of the span in millions of years ago. Alternative to interval. When paired with min_ma it must be strictly greater — max_ma is the deeper-time end of the span.',
       ),
     min_ma: z
       .number()
       .nonnegative()
       .optional()
       .describe(
-        'Younger bound of the span in millions of years ago. Pair with max_ma; alternative to interval.',
+        'Younger bound of the span in millions of years ago. Alternative to interval. When paired with max_ma it must be strictly smaller — min_ma is the nearer-to-present end of the span.',
       ),
   }),
   output: z.object({
@@ -102,8 +103,25 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
   enrichmentTrailer: {
     attribution: { label: 'Source' },
   },
+  errors: [
+    {
+      reason: 'inverted_ma_range',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'min_ma was greater than or equal to max_ma — the span is inverted or empty.',
+      recovery:
+        'Ages count backwards from the present: set max_ma to the older bound and min_ma to the younger one, so min_ma is strictly less than max_ma (e.g. max_ma 252, min_ma 66).',
+    },
+  ],
 
   async handler(input, ctx) {
+    if (input.max_ma != null && input.min_ma != null && input.min_ma >= input.max_ma) {
+      throw ctx.fail(
+        'inverted_ma_range',
+        `min_ma (${input.min_ma}) must be strictly less than max_ma (${input.max_ma}).`,
+        { ...ctx.recoveryFor('inverted_ma_range') },
+      );
+    }
+
     const filter: DiversityFilter = {
       baseName: input.base_name,
       count: input.count,

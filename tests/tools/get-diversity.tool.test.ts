@@ -3,13 +3,15 @@
  * path (full bin set inline), the oldest-first reordering of PBDB's native
  * newest-first bins (structuredContent + content[]), the required-field-on-empty
  * regression (a zero-bin result must still return { bins: [] } that validates and
- * carries an actionable notice), the filter → service mapping, and format()
- * parity for both populated and empty results.
+ * carries an actionable notice), the filter → service mapping, the inverted-Ma
+ * boundary guard (rejected before any PBDB call), and format() parity for both
+ * populated and empty results.
  *
  * The PBDB layer is never hit: getPbdbService().getDiversity is a per-test fake.
  * @module tests/tools/get-diversity.tool
  */
 
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DiversityBin, DiversityFilter } from '@/services/pbdb/types.js';
@@ -114,6 +116,24 @@ describe('paleobiology_get_diversity', () => {
       maxMa: 251.9,
       minMa: 66,
     });
+  });
+
+  it('rejects an inverted or empty Ma span before hitting PBDB (inverted_ma_range)', async () => {
+    const ctx = createMockContext({ errors: getDiversityTool.errors });
+    for (const raw of [
+      { base_name: 'Dinosauria', max_ma: 66, min_ma: 100 },
+      { base_name: 'Dinosauria', max_ma: 66, min_ma: 66 },
+    ]) {
+      const input = getDiversityTool.input.parse(raw);
+      const err = (await getDiversityTool.handler(input, ctx).catch((e) => e)) as {
+        code: number;
+        data?: Record<string, unknown>;
+      };
+      expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(err.data?.reason).toBe('inverted_ma_range');
+      expect(JSON.stringify(err.data)).toMatch(/strictly less than max_ma/);
+    }
+    expect(getDiversity).not.toHaveBeenCalled();
   });
 
   it('returns { bins: [] } (still valid) with a guidance notice on an empty result', async () => {

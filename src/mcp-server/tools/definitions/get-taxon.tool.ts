@@ -10,8 +10,14 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import { getPbdbService, isNotFoundError } from '@/services/pbdb/pbdb-service.js';
 import type { Taxon } from '@/services/pbdb/types.js';
+import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
 
-const ClassificationSchema = z
+/**
+ * The higher-classification block PBDB's `class` show block yields. Exported so
+ * occurrence rows declare the identical shape — both describe the same
+ * service-layer `TaxonClassification`, and a second copy would drift.
+ */
+export const ClassificationSchema = z
   .object({
     phylum: z.string().optional().describe('Phylum, when classified.'),
     class: z.string().optional().describe('Class, when classified.'),
@@ -150,6 +156,12 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
       .describe('When true, include the immediate child taxa of this taxon.'),
   }),
   output: TaxonOutputSchema,
+  enrichment: {
+    attribution: z.string().describe('CC-BY data attribution for the Paleobiology Database.'),
+  },
+  enrichmentTrailer: {
+    attribution: { label: 'Source' },
+  },
   errors: [
     {
       reason: 'taxon_not_found',
@@ -197,6 +209,7 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
       throw err;
     }
 
+    ctx.enrich({ attribution: PBDB_ATTRIBUTION });
     ctx.log.info('Taxon resolved', { taxon_no: taxon.taxon_no, name: taxon.accepted_name });
     return shapeTaxon(taxon);
   },
@@ -217,11 +230,8 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
       );
     }
 
-    const cls = result.classification;
-    const clsParts = (['phylum', 'class', 'order', 'family', 'genus'] as const)
-      .map((k) => (cls[k] ? `${k}: ${cls[k]}` : null))
-      .filter((x): x is string => x !== null);
-    if (clsParts.length > 0) lines.push(`**classification:** ${clsParts.join(' › ')}`);
+    const cls = fmtClassification(result.classification);
+    if (cls) lines.push(`**classification:** ${cls}`);
 
     lines.push(`**first appearance:** ${fmtWindow(result.first_appearance)}`);
     lines.push(`**last appearance:** ${fmtWindow(result.last_appearance)}`);
@@ -239,6 +249,19 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });
+
+/**
+ * Render a higher classification as `phylum: X › class: Y › …`, or '' when PBDB
+ * resolved no level. Exported alongside {@link ClassificationSchema} so occurrence
+ * rows render the identical string — the two surfaces describe the same block.
+ */
+export function fmtClassification(cls: z.infer<typeof ClassificationSchema> | undefined): string {
+  if (!cls) return '';
+  return (['phylum', 'class', 'order', 'family', 'genus'] as const)
+    .filter((k) => cls[k])
+    .map((k) => `${k}: ${cls[k]}`)
+    .join(' › ');
+}
 
 /** Render a FAD/LAD window, preserving unknowns. */
 function fmtWindow(w: {

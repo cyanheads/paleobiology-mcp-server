@@ -3,8 +3,11 @@
  * Covers the canvas-disabled inline path (including the required-field-on-empty
  * regression: a zero-result return must still carry spilled/row_count and
  * validate against the output schema), the limit-truncation notice, the
- * canvas-enabled non-spilled and spilled branches, the environment-enum →
- * filter mapping, format() parity (modern vs paleo coords), and sparse rows.
+ * canvas-enabled non-spilled and spilled branches (canvas_id is returned only on
+ * the spill path — an inline result stages nothing), the cross-field boundary
+ * guards (lngmin/lngmax both-or-neither, min_ma strictly below max_ma, both
+ * rejected before any PBDB call), the environment-enum → filter mapping,
+ * format() parity (modern vs paleo coords, classification), and sparse rows.
  *
  * Neither PBDB nor DuckDB is hit: getPbdbService() yields an async generator of
  * fake rows, and getCanvas() returns a fake DataCanvas whose acquired instance
@@ -126,6 +129,118 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     expect(searchOccurrences).not.toHaveBeenCalled();
   });
 
+  it('rejects a half-specified longitude box before hitting PBDB (incomplete_bbox)', async () => {
+    // PBDB answers a lone lngmin/lngmax with HTTP 400 + errors[], which used to
+    // reach the agent as a NotFound with no recovery. Guard it at the boundary.
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    for (const raw of [
+      { base_name: 'Canis', lngmin: -130 },
+      { base_name: 'Canis', lngmax: -60 },
+    ]) {
+      const input = searchOccurrencesTool.input.parse(raw);
+      const err = (await searchOccurrencesTool.handler(input, ctx).catch((e) => e)) as {
+        code: number;
+        data?: Record<string, unknown>;
+      };
+      expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(err.data?.reason).toBe('incomplete_bbox');
+      expect(JSON.stringify(err.data)).toMatch(/lngmin AND lngmax/);
+    }
+    expect(searchOccurrences).not.toHaveBeenCalled();
+  });
+
+  it('accepts a complete longitude box and a lone latitude edge', async () => {
+    // A latitude half-plane is valid at PBDB and must keep working; an inverted
+    // latitude box is normalized upstream, so no ordering guard applies there.
+    let captured: OccurrenceFilter | undefined;
+    searchOccurrences.mockImplementation((filter: OccurrenceFilter) => {
+      captured = filter;
+      return rowGen([tRex]);
+    });
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    for (const raw of [
+      { base_name: 'Canis', latmin: 80 },
+      { base_name: 'Canis', lngmin: -130, lngmax: -60 },
+      { base_name: 'Canis', latmin: 80, latmax: 10 },
+    ]) {
+      const input = searchOccurrencesTool.input.parse(raw);
+      await expect(searchOccurrencesTool.handler(input, ctx)).resolves.toBeDefined();
+    }
+    expect(captured).toMatchObject({ latmin: 80, latmax: 10 });
+  });
+
+  it('rejects an inverted or empty Ma window before hitting PBDB (inverted_ma_range)', async () => {
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    for (const raw of [
+      { base_name: 'Tyrannosaurus', max_ma: 66, min_ma: 100 },
+      { base_name: 'Tyrannosaurus', max_ma: 66, min_ma: 66 },
+    ]) {
+      const input = searchOccurrencesTool.input.parse(raw);
+      const err = (await searchOccurrencesTool.handler(input, ctx).catch((e) => e)) as {
+        code: number;
+        data?: Record<string, unknown>;
+      };
+      expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(err.data?.reason).toBe('inverted_ma_range');
+      expect(JSON.stringify(err.data)).toMatch(/strictly less than max_ma/);
+    }
+    expect(searchOccurrences).not.toHaveBeenCalled();
+  });
+
+  it('accepts a Ma window with min_ma below max_ma', async () => {
+    stubRows([tRex]);
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({
+      base_name: 'Tyrannosaurus',
+      max_ma: 100,
+      min_ma: 66,
+    });
+    await expect(searchOccurrencesTool.handler(input, ctx)).resolves.toMatchObject({
+      row_count: 1,
+    });
+  });
+
+  it('surfaces the classification the service already fetched on each row', async () => {
+    // PBDB's `class` show block is requested and normalized, and the canvas stages
+    // it — the tool's own rows must carry it too, on both output surfaces.
+    stubRows([
+      {
+        ...tRex,
+        classification: {
+          phylum: 'Chordata',
+          class: 'Reptilia',
+          family: 'Tyrannosauridae',
+          genus: 'Tyrannosaurus',
+        },
+      },
+    ]);
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({ base_name: 'Tyrannosaurus', limit: 1 });
+    const result = await searchOccurrencesTool.handler(input, ctx);
+
+    expect(result).toEqual(expect.schemaMatching(searchOccurrencesTool.output));
+    expect(result.occurrences[0]?.classification).toEqual({
+      phylum: 'Chordata',
+      class: 'Reptilia',
+      family: 'Tyrannosauridae',
+      genus: 'Tyrannosaurus',
+    });
+    const text = renderText(searchOccurrencesTool.format?.(result));
+    expect(text).toContain(
+      'classification:** phylum: Chordata › class: Reptilia › family: Tyrannosauridae › genus: Tyrannosaurus',
+    );
+  });
+
+  it('omits the classification line when PBDB resolved no ranks', async () => {
+    stubRows([tRex]); // tRex fixture carries no classification
+    const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
+    const input = searchOccurrencesTool.input.parse({ base_name: 'Tyrannosaurus' });
+    const result = await searchOccurrencesTool.handler(input, ctx);
+
+    expect(result.occurrences[0]).not.toHaveProperty('classification');
+    expect(renderText(searchOccurrencesTool.format?.(result))).not.toContain('classification:**');
+  });
+
   it('accepts collection_no as a sole filter and maps it to the service (drilldown)', async () => {
     let captured: OccurrenceFilter | undefined;
     searchOccurrences.mockImplementation((filter: OccurrenceFilter) => {
@@ -210,7 +325,9 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
     getCanvas.mockReset();
   });
 
-  it('returns canvas_id without spilling when the result fits inline', async () => {
+  it('omits canvas_id (and the format header clause) when the result did not spill', async () => {
+    // Nothing is staged on a non-spilling call, so returning canvas_id would point
+    // the agent at an empty canvas — it is gated on `spilled`, same as table_name.
     stubRows([tRex]);
     const instance = makeFakeInstance('canvasAbc01');
     getCanvas.mockReturnValue({ acquire: vi.fn().mockResolvedValue(instance) });
@@ -221,11 +338,16 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
 
     expect(result).toEqual(expect.schemaMatching(searchOccurrencesTool.output));
     expect(result.spilled).toBe(false);
-    expect(result.canvas_id).toBe('canvasAbc01');
+    expect(result.canvas_id).toBeUndefined();
     expect(result.table_name).toBeUndefined();
     expect(result.row_count).toBe(1);
     // registerTable must NOT be called when the source fits the preview budget.
     expect(instance.registerTable).not.toHaveBeenCalled();
+    // content[]-only clients must not be pointed at the canvas either.
+    const text = renderText(searchOccurrencesTool.format?.(result));
+    expect(text).toContain('(spilled: no)');
+    expect(text).not.toContain('canvasAbc01');
+    expect(text).not.toContain('canvas');
   });
 
   it('spills a large result to the canvas and reports table_name + staged row_count', async () => {

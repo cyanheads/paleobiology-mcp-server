@@ -1,8 +1,9 @@
 /**
  * @fileoverview paleobiology_dataframe_query — read-only SQL over staged occurrences.
  * Runs a SELECT against the occurrence result sets paleobiology_search_occurrences
- * stages on a DataCanvas: count by interval, group by formation/country/lithology,
- * map by region. Mandatory companion to the spill path.
+ * stages on a DataCanvas: count by interval, group by formation/country, roll up
+ * by family from the classification JSON column, map by region. Mandatory
+ * companion to the spill path.
  * @module mcp-server/tools/definitions/dataframe-query.tool
  */
 
@@ -26,10 +27,13 @@ export const dataframeQueryTool = tool('paleobiology_dataframe_query', {
   description:
     'Run a read-only SQL SELECT against occurrence result sets staged on a DataCanvas by ' +
     'paleobiology_search_occurrences. This is how you analyze a large fossil set without re-fetching ' +
-    'it: count occurrences by interval, group by formation, country (cc), or lithology, or filter by ' +
-    'a paleo/modern coordinate range. Reference tables by the table_name that search_occurrences ' +
-    'returned — call paleobiology_dataframe_describe first if you do not know the table or column ' +
-    'names. SELECT only; writes and file-reading functions are rejected.',
+    'it: count occurrences by early_interval, group by formation, country (cc), or accepted_name, or ' +
+    'filter by a paleo/modern coordinate range. The classification column is JSON — roll up by rank ' +
+    "with json_extract_string(classification, '$.family') (also $.phylum, $.class, $.order, $.genus). " +
+    'Staged rows are occurrences, so collection-only fields such as lithology are not present. ' +
+    'Reference tables by the table_name that search_occurrences returned — call ' +
+    'paleobiology_dataframe_describe first if you do not know the table or column names. SELECT only; ' +
+    'writes and file-reading functions are rejected.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     canvas_id: z

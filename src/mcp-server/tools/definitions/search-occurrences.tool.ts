@@ -2,8 +2,9 @@
  * @fileoverview paleobiology_search_occurrences — the flagship fossil-occurrence search.
  * Filters by taxon (clade-inclusive base_name or exact taxon_name), geologic
  * interval (named or Ma range), geographic bounding box, and depositional
- * environment. Surfaces modern AND paleo coordinates and both temporal
- * representations on every row. Large result sets spill to a DataCanvas for SQL.
+ * environment. Surfaces modern AND paleo coordinates, both temporal
+ * representations, and the higher classification on every row. Large result sets
+ * spill to a DataCanvas for SQL.
  * @module mcp-server/tools/definitions/search-occurrences.tool
  */
 
@@ -11,6 +12,10 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { spillover } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getServerConfig } from '@/config/server-config.js';
+import {
+  ClassificationSchema,
+  fmtClassification,
+} from '@/mcp-server/tools/definitions/get-taxon.tool.js';
 import { getCanvas } from '@/services/canvas-accessor.js';
 import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
 import type { EnvironmentFilter, Occurrence, OccurrenceFilter } from '@/services/pbdb/types.js';
@@ -94,13 +99,18 @@ const OccurrenceSchema = z
       .describe('ISO 3166-1 alpha-2 country code of the modern locality, when known.'),
     state: z.string().optional().describe('State/province of the modern locality, when known.'),
     county: z.string().optional().describe('County of the modern locality, when known.'),
+    classification: ClassificationSchema.optional().describe(
+      'Higher classification of the accepted name (phylum → genus) — group rows by family or order without a per-row paleobiology_get_taxon call. Each level is present only when PBDB resolves it; omitted entirely when PBDB resolves none.',
+    ),
     reference_no: z
       .number()
       .int()
       .optional()
       .describe('PBDB bibliographic reference id for provenance.'),
   })
-  .describe('A single fossil occurrence with modern and paleo coordinates, age, and strata.');
+  .describe(
+    'A single fossil occurrence with modern and paleo coordinates, age, strata, and classification.',
+  );
 
 const SearchOccurrencesOutputSchema = z.object({
   occurrences: z
@@ -117,7 +127,7 @@ const SearchOccurrencesOutputSchema = z.object({
     .string()
     .optional()
     .describe(
-      'Canvas id holding the staged occurrence set — pass to paleobiology_dataframe_query. Absent when DataCanvas is disabled.',
+      'Canvas id holding the staged occurrence set — pass to paleobiology_dataframe_query. Present only when spilled is true; a result that fit inline stages nothing, so there is no table to query.',
     ),
   table_name: z
     .string()
@@ -143,10 +153,11 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     'locality with collection_no (take it from a paleobiology_search_collections row). At least one ' +
     'filter is required — taxon, time, place, environment, or collection_no. Every row carries two ' +
     'distinct coordinate systems — modern lng/lat (where the rock is today) and paleo lng/lat (where the ' +
-    'landmass sat at deposition) — plus the formation and age interval; never plot a deep-time occurrence ' +
-    'on a modern coastline. Resolve a name with paleobiology_get_taxon first if unsure. Broad queries ' +
-    'return many rows: an inline preview answers the immediate question, and the matching occurrences — up ' +
-    'to the per-call cap — stage on a DataCanvas (canvas_id + table_name) for SQL via ' +
+    'landmass sat at deposition) — plus the formation, age interval, and higher classification (phylum ' +
+    'through genus); never plot a deep-time occurrence on a modern coastline. Resolve a name with ' +
+    'paleobiology_get_taxon first if unsure. Broad queries return many rows: an inline preview answers the ' +
+    'immediate question, and when the set outgrows that preview the matching occurrences — up to the ' +
+    'per-call cap — stage on a DataCanvas (canvas_id + table_name, returned only then) for SQL via ' +
     'paleobiology_dataframe_query (count by interval, group by formation/country, map by region). The ' +
     'response notice flags when that cap was hit and more may match upstream.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -182,39 +193,47 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       .nonnegative()
       .optional()
       .describe(
-        'Older age bound in millions of years ago. Pair with min_ma; alternative to interval.',
+        'Older age bound in millions of years ago. Alternative to interval. When paired with min_ma it must be strictly greater — max_ma is the deeper-time end of the window.',
       ),
     min_ma: z
       .number()
       .nonnegative()
       .optional()
       .describe(
-        'Younger age bound in millions of years ago. Pair with max_ma; alternative to interval.',
+        'Younger age bound in millions of years ago. Alternative to interval. When paired with max_ma it must be strictly smaller — min_ma is the nearer-to-present end of the window.',
       ),
     lngmin: z
       .number()
       .min(-180)
       .max(180)
       .optional()
-      .describe('Western edge of the bounding box, decimal degrees (−180…180).'),
+      .describe(
+        'Western edge of the bounding box, decimal degrees (−180…180). Longitude is a closed pair — supply lngmax with it or neither.',
+      ),
     lngmax: z
       .number()
       .min(-180)
       .max(180)
       .optional()
-      .describe('Eastern edge of the bounding box, decimal degrees (−180…180).'),
+      .describe(
+        'Eastern edge of the bounding box, decimal degrees (−180…180). Longitude is a closed pair — supply lngmin with it or neither.',
+      ),
     latmin: z
       .number()
       .min(-90)
       .max(90)
       .optional()
-      .describe('Southern edge of the bounding box, decimal degrees (−90…90).'),
+      .describe(
+        'Southern edge of the bounding box, decimal degrees (−90…90). Valid on its own — a lone latitude edge filters as a half-plane.',
+      ),
     latmax: z
       .number()
       .min(-90)
       .max(90)
       .optional()
-      .describe('Northern edge of the bounding box, decimal degrees (−90…90).'),
+      .describe(
+        'Northern edge of the bounding box, decimal degrees (−90…90). Valid on its own — a lone latitude edge filters as a half-plane.',
+      ),
     environment: z
       .enum(ENVIRONMENTS)
       .optional()
@@ -261,6 +280,20 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       recovery:
         'Provide at least one filter: base_name or taxon_name, an interval or max_ma/min_ma range, a lng/lat bounding box, an environment, or a collection_no — then retry.',
     },
+    {
+      reason: 'incomplete_bbox',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'Exactly one of lngmin/lngmax was supplied — a longitude box needs both edges.',
+      recovery:
+        'Supply the other longitude edge (lngmin AND lngmax) or drop the one you sent. A lone latmin or latmax is fine on its own.',
+    },
+    {
+      reason: 'inverted_ma_range',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'min_ma was greater than or equal to max_ma — the age window is inverted or empty.',
+      recovery:
+        'Ages count backwards from the present: set max_ma to the older bound and min_ma to the younger one, so min_ma is strictly less than max_ma (e.g. max_ma 100, min_ma 66).',
+    },
   ],
 
   async handler(input, ctx) {
@@ -269,6 +302,20 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
         'missing_filter',
         'paleobiology_search_occurrences needs at least one filter (taxon, geologic time, place, environment, or collection_no) — PBDB rejects an unfiltered occurrence query.',
         { ...ctx.recoveryFor('missing_filter') },
+      );
+    }
+    if ((input.lngmin == null) !== (input.lngmax == null)) {
+      throw ctx.fail(
+        'incomplete_bbox',
+        `A longitude box needs both edges — got ${input.lngmin != null ? 'lngmin' : 'lngmax'} alone.`,
+        { ...ctx.recoveryFor('incomplete_bbox') },
+      );
+    }
+    if (input.max_ma != null && input.min_ma != null && input.min_ma >= input.max_ma) {
+      throw ctx.fail(
+        'inverted_ma_range',
+        `min_ma (${input.min_ma}) must be strictly less than max_ma (${input.max_ma}).`,
+        { ...ctx.recoveryFor('inverted_ma_range') },
       );
     }
 
@@ -362,17 +409,22 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     const out: z.infer<typeof SearchOccurrencesOutputSchema> = {
       occurrences: previewRows,
       spilled: result.spilled,
-      canvas_id: instance.canvasId,
       row_count: result.spilled ? result.handle.rowCount : previewRows.length,
     };
-    if (result.spilled) out.table_name = result.handle.tableName;
+    // canvas_id and table_name are gated together: nothing is staged unless the
+    // result spilled, so returning the id on an inline result would point the
+    // agent at an empty canvas.
+    if (result.spilled) {
+      out.canvas_id = instance.canvasId;
+      out.table_name = result.handle.tableName;
+    }
     return out;
   },
 
   format: (result) => {
     const header = result.spilled
       ? `**${result.row_count} occurrence(s)** staged on canvas \`${result.canvas_id ?? ''}\` as table \`${result.table_name ?? ''}\` (spilled: yes); preview below. See the notice for whether the per-call cap was hit.`
-      : `**${result.occurrences.length} occurrence(s)** (spilled: no${result.canvas_id ? `; canvas \`${result.canvas_id}\`` : ''}).`;
+      : `**${result.occurrences.length} occurrence(s)** (spilled: no).`;
     if (result.occurrences.length === 0) {
       return [{ type: 'text', text: header }];
     }
@@ -402,6 +454,8 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       if (geo) lines.push(`**strata:** ${geo}`);
       const place = [o.county, o.state, o.cc].filter(Boolean).join(', ');
       if (place) lines.push(`**locality:** ${place}`);
+      const cls = fmtClassification(o.classification);
+      if (cls) lines.push(`**classification:** ${cls}`);
       if (o.reference_no != null) lines.push(`**reference_no:** ${o.reference_no}`);
       lines.push('');
     }

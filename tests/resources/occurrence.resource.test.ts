@@ -5,7 +5,9 @@
  * range{} wrapper), the not-found contract remap (occurrence_not_found /
  * taxon_not_found), the no-leak hardening (a clean typed not-found carries only
  * its reason — never the upstream statusCode/responseBody/requestId), the param
- * regex rejecting non-integer ids, and a non-not-found error bubbling unchanged.
+ * regex rejecting non-integer ids, the CC BY attribution both payloads carry
+ * (resources have no enrichment trailer to ride), and a non-not-found error
+ * bubbling unchanged.
  *
  * getPbdbService() is mocked per-test; isNotFoundError() (the real predicate
  * the resources remap on) stays live via importActual.
@@ -13,9 +15,10 @@
  */
 
 import { JsonRpcErrorCode, McpError, notFound } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Occurrence, Taxon } from '@/services/pbdb/types.js';
+import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
 
 const getOccurrence = vi.fn();
 const getTaxon = vi.fn();
@@ -51,6 +54,15 @@ describe('paleobiology://occurrence/{occurrence_no}', () => {
     expect(result).toMatchObject({ occurrence_no: 139292, accepted_name: 'Tyrannosaurus rex' });
     // The string param is coerced to a number before reaching the service.
     expect(getOccurrence).toHaveBeenCalledWith(139292, ctx);
+  });
+
+  it('credits PBDB on the payload — resources have no enrichment trailer to ride', async () => {
+    getOccurrence.mockResolvedValue({ occurrence_no: 139292 } satisfies Occurrence);
+    const ctx = createMockContext({ errors: occurrenceResource.errors });
+    const params = occurrenceResource.params.parse({ occurrence_no: '139292' });
+    const result = (await occurrenceResource.handler(params, ctx)) as { attribution?: string };
+    expect(result.attribution).toBe(PBDB_ATTRIBUTION);
+    expect(result.attribution).toMatch(/CC BY 4\.0/);
   });
 
   it('rejects a non-integer occurrence_no at the param boundary', () => {
@@ -133,15 +145,29 @@ describe('paleobiology://taxon/{taxon_no}', () => {
       taxonResource.params.parse({ taxon_no: '54833' }),
       createMockContext({ errors: taxonResource.errors }),
     );
+    const toolCtx = createMockContext({ errors: getTaxonTool.errors });
     const toolResult = await getTaxonTool.handler(
       getTaxonTool.input.parse({ taxon_no: 54833 }),
-      createMockContext({ errors: getTaxonTool.errors }),
+      toolCtx,
     );
 
-    // Same service taxon → byte-identical contract on both surfaces, both valid
-    // against the tool's TaxonOutputSchema.
-    expect(resourceResult).toEqual(toolResult);
+    // Same service taxon → identical domain contract on both surfaces, both valid
+    // against the tool's TaxonOutputSchema. The tool credits PBDB through its
+    // attribution enrichment (merged into structuredContent by the framework); the
+    // resource, which has no enrichment mechanism, carries the same string as a
+    // plain payload field — so the two wire surfaces still agree.
+    expect(resourceResult).toEqual({ ...toolResult, attribution: PBDB_ATTRIBUTION });
+    expect(getEnrichment(toolCtx).attribution).toBe(PBDB_ATTRIBUTION);
     expect(resourceResult).toEqual(expect.schemaMatching(getTaxonTool.output));
+  });
+
+  it('credits PBDB on the payload — resources have no enrichment trailer to ride', async () => {
+    getTaxon.mockResolvedValue(rangedTaxon());
+    const ctx = createMockContext({ errors: taxonResource.errors });
+    const params = taxonResource.params.parse({ taxon_no: '54833' });
+    const result = (await taxonResource.handler(params, ctx)) as { attribution?: string };
+    expect(result.attribution).toBe(PBDB_ATTRIBUTION);
+    expect(result.attribution).toMatch(/CC BY 4\.0/);
   });
 
   it('rejects a non-integer taxon_no at the param boundary', () => {

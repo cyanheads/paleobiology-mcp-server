@@ -47,8 +47,9 @@ Search fossil occurrences filtered by taxon, geologic time, geography, and envir
 - `collection_no` scopes the search to a single locality — drill from a `paleobiology_search_collections` row into the fauna found there
 - `environment` enum: `marine`, `terrestrial`, `freshwater`
 - At least one filter (taxon, time, place, environment, or `collection_no`) is required — an unfiltered call is rejected before the upstream request, not reported as PBDB being unavailable
-- Every row carries two distinct coordinate systems — **modern** lng/lat (where the rock is today) and **paleo** lng/lat (where the landmass sat at deposition) — plus formation and age interval
-- Broad queries return many rows: an inline preview answers the immediate question, and the matching occurrences — up to the per-call cap (`limit`, further bounded by `PBDB_MAX_OCCURRENCES`) — stage on a DataCanvas (`canvas_id` + `table_name`) for SQL via `paleobiology_dataframe_query`. The response notice flags when the cap was hit and more may match upstream
+- `lngmin`/`lngmax` are a closed pair (both or neither), and `min_ma` must be strictly less than `max_ma` — both are rejected at the tool boundary with a recovery hint, before the upstream request. A lone `latmin` or `latmax` is valid and filters as a half-plane
+- Every row carries two distinct coordinate systems — **modern** lng/lat (where the rock is today) and **paleo** lng/lat (where the landmass sat at deposition) — plus formation, age interval, and higher classification (phylum through genus)
+- Broad queries return many rows: an inline preview answers the immediate question, and when the set outgrows that preview the matching occurrences — up to the per-call cap (`limit`, further bounded by `PBDB_MAX_OCCURRENCES`) — stage on a DataCanvas for SQL via `paleobiology_dataframe_query`. `canvas_id` and `table_name` come back only on that spill path; a result that fits inline stages nothing. The response notice flags when the cap was hit and more may match upstream
 - Reusing a `canvas_id` **replaces** that canvas's occurrence table — each search restages its result, it does not accumulate across calls
 
 ---
@@ -67,7 +68,7 @@ Resolve a taxon by name or integer `taxon_no` to its full record and fossil temp
 
 Compute a diversity / origination / extinction curve for a clade across geologic time.
 
-- Clade-inclusive `base_name`, bound by a named interval (e.g. `Mesozoic`) or a `max_ma`/`min_ma` range
+- Clade-inclusive `base_name`, bound by a named interval (e.g. `Mesozoic`) or a `max_ma`/`min_ma` range (`min_ma` must be strictly less than `max_ma`)
 - `count` enum: `genera`, `species`, `families`; `resolution` enum: `period`, `epoch`, `age`
 - The full bin set returns inline (a diversity series is a bounded set of geologic intervals)
 - Counts reflect **sampled** diversity, biased by collection effort and rock availability — not true past diversity
@@ -80,6 +81,7 @@ Find fossil collections (localities) by area and geologic time — "what has bee
 
 - Each locality returns location, age (named interval and Ma), formation and strata, lithology, depositional environment, and co-occurring-fossils count
 - Filter by `base_name`, a named interval or `max_ma`/`min_ma` range, a lng/lat bounding box, a `formation` or `lithology` name, and/or `environment` — at least one filter is required (an unfiltered call is rejected before the upstream request)
+- Same bounding-box and Ma-ordering rules as `paleobiology_search_occurrences`: `lngmin`/`lngmax` both or neither, `min_ma` strictly less than `max_ma`
 - Results page inline via `limit`/`offset`; the response discloses when more remain
 - Take a `collection_no` from a row — or the same bbox+interval — into `paleobiology_search_occurrences` to see the fauna found together
 
@@ -89,8 +91,8 @@ Find fossil collections (localities) by area and geologic time — "what has bee
 
 | Type | Name | Description |
 |:---|:---|:---|
-| Resource | `paleobiology://occurrence/{occurrence_no}` | One fossil occurrence with full detail — modern + paleo coordinates, classification, strata, locality. |
-| Resource | `paleobiology://taxon/{taxon_no}` | One taxon record with its fossil range and classification. |
+| Resource | `paleobiology://occurrence/{occurrence_no}` | One fossil occurrence with full detail — modern + paleo coordinates, classification, strata, locality, and the CC BY source credit. |
+| Resource | `paleobiology://taxon/{taxon_no}` | One taxon record with its fossil range, classification, and the CC BY source credit. |
 
 All resource data is also reachable via tools — the resources mirror a single-record read of `paleobiology_search_occurrences` / `paleobiology_get_taxon` for clients that surface resources. Tool-only clients lose nothing. `occurrence_no` and `taxon_no` are bare integers from those tools' output.
 
@@ -111,13 +113,13 @@ Paleobiology-specific:
 
 - Type-safe client for the Paleobiology Database (PBDB) REST API, requesting `vocab=pbdb` so readable field names come straight from upstream instead of hand-mapped terse codes
 - Bundled ICS geologic time-scale snapshot — `paleobiology_list_intervals` resolves named intervals ↔ absolute Ma boundaries with no network call
-- DataCanvas spill for broad occurrence queries: an inline preview plus a staged table queryable with read-only SQL (count by interval, group by formation/country/lithology)
+- DataCanvas spill for broad occurrence queries: an inline preview plus a staged table queryable with read-only SQL (count by interval, group by formation/country, roll up by family from the `classification` JSON column)
 
 Agent-friendly output:
 
 - Two coordinate systems on every occurrence — modern lng/lat and paleo lng/lat — distinctly labeled, so an agent never plots a deep-time fossil on a modern coastline
 - Both temporal representations on every age — the named interval **and** its Ma boundaries
-- Provenance and honesty — every row carries its `reference_no`, responses carry the CC-BY attribution, sparse upstream fields (paleo-coords, formation, `late_interval`) are omitted rather than zeroed, and diversity counts are flagged as sampled
+- Provenance and honesty — every row carries its `reference_no`, every PBDB-backed tool and resource carries the CC-BY attribution, sparse upstream fields (paleo-coords, formation, `late_interval`) are omitted rather than zeroed, and diversity counts are flagged as sampled
 
 ---
 

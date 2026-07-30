@@ -9,6 +9,7 @@
 import { resource, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getPbdbService, isNotFoundError } from '@/services/pbdb/pbdb-service.js';
+import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
 
 export const occurrenceResource = resource('paleobiology://occurrence/{occurrence_no}', {
   name: 'Fossil occurrence',
@@ -16,7 +17,8 @@ export const occurrenceResource = resource('paleobiology://occurrence/{occurrenc
   description:
     'Read one fossil occurrence by its integer occurrence_no (obtained from paleobiology_search_occurrences ' +
     'output rows). Returns the accepted and identified names, age as both a named interval and a Ma range, ' +
-    'modern and paleo coordinates distinctly, formation/strata, and locality.',
+    'modern and paleo coordinates distinctly, formation/strata, locality, and an attribution field ' +
+    'carrying the CC BY 4.0 source credit.',
   mimeType: 'application/json',
   params: z.object({
     occurrence_no: z
@@ -37,7 +39,13 @@ export const occurrenceResource = resource('paleobiology://occurrence/{occurrenc
   async handler(params, ctx) {
     const occurrenceNo = Number(params.occurrence_no);
     try {
-      return await getPbdbService().getOccurrence(occurrenceNo, ctx);
+      // The occurrence tools credit PBDB through their `attribution` enrichment;
+      // resources have no enrichment mechanism, so the CC BY credit rides as a
+      // plain payload field and every PBDB-returning surface self-credits.
+      return {
+        ...(await getPbdbService().getOccurrence(occurrenceNo, ctx)),
+        attribution: PBDB_ATTRIBUTION,
+      };
     } catch (err) {
       if (isNotFoundError(err)) {
         throw ctx.fail(
