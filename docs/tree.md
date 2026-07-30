@@ -1,6 +1,6 @@
 # paleobiology-mcp-server - Directory Structure
 
-Generated on: 2026-06-28 14:10:27
+Generated on: 2026-07-30 14:42:00
 
 ```text
 paleobiology-mcp-server/
@@ -10,10 +10,12 @@ paleobiology-mcp-server/
 │   ├── mcp.json
 │   └── plugin.json
 ├── .github/
-│   └── ISSUE_TEMPLATE/
-│       ├── bug_report.yml
-│       ├── config.yml
-│       └── feature_request.yml
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.yml
+│   │   ├── config.yml
+│   │   └── feature_request.yml
+│   ├── FUNDING.yml
+│   └── SECURITY.md
 ├── .vscode/
 │   ├── extensions.json
 │   └── settings.json
@@ -174,6 +176,7 @@ paleobiology-mcp-server/
 │       └── search-occurrences.tool.test.ts
 ├── .dockerignore
 ├── .env.example
+├── .gitattributes
 ├── .gitignore
 ├── .mcpbignore
 ├── AGENTS.md
@@ -181,6 +184,7 @@ paleobiology-mcp-server/
 ├── bun.lock
 ├── bunfig.toml
 ├── CHANGELOG.md
+├── CITATION.cff
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile

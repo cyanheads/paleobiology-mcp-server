@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-07-30
+
+search_occurrences, search_collections, and get_diversity reject invalid bounding boxes and inverted Ma ranges before querying PBDB; occurrence rows and get_taxon gain classification and CC BY attribution; canvas_id is returned only on an actual spill; list_intervals sorts filtered results oldest-first.
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-06-28
 
 paleobiology_search_occurrences gains a collection_no drilldown filter (PBDB coll_id); the DataCanvas spill now discloses a capped page honestly instead of claiming the full set; and both search tools reject filterless calls with a typed missing_filter error before any PBDB request.
