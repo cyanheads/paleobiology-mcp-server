@@ -26,18 +26,34 @@ describe('IntervalIndex', () => {
     expect(m?.min_ma).toBe(66);
   });
 
-  it('filters by name substring', () => {
+  it('filters by name substring, oldest-first', () => {
     const hits = index.filter({ name: 'cretaceous' });
-    const names = hits.map((iv) => iv.name);
-    expect(names).toContain('Cretaceous');
-    expect(names).toContain('Late Cretaceous');
-    expect(names).toContain('Early Cretaceous');
+    // The Early Cretaceous shares the period's 143.1 Ma bottom boundary, so the
+    // containing period leads; the Late Cretaceous (100.5 Ma) comes last.
+    expect(hits.map((iv) => iv.name)).toEqual([
+      'Cretaceous',
+      'Early Cretaceous',
+      'Late Cretaceous',
+    ]);
   });
 
   it('filters by Ma overlap', () => {
     // 70 Ma falls inside the Maastrichtian (66–72.2) and Late Cretaceous (66–100.5).
     const hits = index.filter({ minMa: 70, maxMa: 70, level: 'age' });
     expect(hits.map((iv) => iv.name)).toContain('Maastrichtian');
+  });
+
+  it('returns FILTERED intervals oldest-first, not raw snapshot order', () => {
+    // The snapshot is a hierarchical eon→age traversal that runs roughly
+    // youngest-first; the schema, format(), and all() all promise oldest-first,
+    // so filter() must sort too rather than leak the traversal order.
+    const periods = index.filter({ level: 'period' });
+    expect(periods.length).toBeGreaterThan(10);
+    expect(periods[0]?.name).toBe('Siderian');
+    expect(periods.at(-1)?.name).toBe('Quaternary');
+    for (let i = 1; i < periods.length; i++) {
+      expect(periods[i - 1]!.max_ma).toBeGreaterThanOrEqual(periods[i]!.max_ma);
+    }
   });
 
   it('restricts to a single level', () => {

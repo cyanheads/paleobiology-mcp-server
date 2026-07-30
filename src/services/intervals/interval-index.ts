@@ -14,6 +14,13 @@ import { ICS_INTERVALS, ICS_VERSION, SNAPSHOT_GENERATED } from './time-scale-dat
 /** Normalize an interval name for case-insensitive lookup. */
 const norm = (s: string): string => s.trim().toLowerCase();
 
+/**
+ * Oldest-first comparator (descending `max_ma`). Ties — a period and its older
+ * epoch share a bottom boundary — keep snapshot order, which nests the coarser
+ * interval ahead of its children.
+ */
+const oldestFirst = (a: Interval, b: Interval): number => b.max_ma - a.max_ma;
+
 export class IntervalIndex {
   private readonly byNameExact = new Map<string, Interval>();
   private readonly intervals: readonly Interval[];
@@ -37,7 +44,10 @@ export class IntervalIndex {
 
   /**
    * Filter intervals for the list tool. All filters are ANDed; substring match
-   * on `name`, inclusive Ma overlap for the range, exact `level`.
+   * on `name`, inclusive Ma overlap for the range, exact `level`. Sorted
+   * oldest-first, same as {@link all} — the bundled snapshot is in hierarchical
+   * eon→age traversal order (roughly youngest-first), so returning raw array
+   * order here would contradict the schema's oldest-first contract.
    */
   filter(opts: {
     name?: string;
@@ -46,20 +56,22 @@ export class IntervalIndex {
     level?: IntervalLevel;
   }): Interval[] {
     const needle = opts.name ? norm(opts.name) : undefined;
-    return this.intervals.filter((iv) => {
-      if (needle && !norm(iv.name).includes(needle)) return false;
-      if (opts.level && iv.level !== opts.level) return false;
-      // Overlap test against [minMa, maxMa] when either bound is supplied.
-      if (opts.minMa != null && iv.max_ma < opts.minMa) return false;
-      if (opts.maxMa != null && iv.min_ma > opts.maxMa) return false;
-      return true;
-    });
+    return this.intervals
+      .filter((iv) => {
+        if (needle && !norm(iv.name).includes(needle)) return false;
+        if (opts.level && iv.level !== opts.level) return false;
+        // Overlap test against [minMa, maxMa] when either bound is supplied.
+        if (opts.minMa != null && iv.max_ma < opts.minMa) return false;
+        if (opts.maxMa != null && iv.min_ma > opts.maxMa) return false;
+        return true;
+      })
+      .sort(oldestFirst);
   }
 
   /** All intervals, optionally restricted to one level. Sorted oldest-first. */
   all(level?: IntervalLevel): Interval[] {
     const items = level ? this.intervals.filter((iv) => iv.level === level) : [...this.intervals];
-    return items.sort((a, b) => b.max_ma - a.max_ma);
+    return items.sort(oldestFirst);
   }
 }
 

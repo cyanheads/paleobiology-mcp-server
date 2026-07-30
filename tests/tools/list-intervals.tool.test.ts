@@ -78,9 +78,38 @@ describe('paleobiology_list_intervals', () => {
     const result = listIntervalsTool.handler(input, ctx) as {
       intervals: { name: string; level: string }[];
     };
+    expect(result.intervals.length).toBeGreaterThan(10);
     expect(result.intervals.every((iv) => iv.level === 'period')).toBe(true);
     expect(result.intervals.map((iv) => iv.name)).toContain('Cretaceous');
     expect(result.intervals.map((iv) => iv.name)).not.toContain('Maastrichtian');
+  });
+
+  it('returns filtered results oldest-first, matching the schema and format()', () => {
+    // Every filtered path used to return raw snapshot order (~youngest-first)
+    // while only the unfiltered path sorted — the schema promises oldest-first.
+    const ctx = createMockContext({ errors: listIntervalsTool.errors });
+    const periods = listIntervalsTool.handler(
+      listIntervalsTool.input.parse({ level: 'period' }),
+      ctx,
+    ) as { intervals: { name: string; max_ma: number }[] };
+    expect(periods.intervals[0]?.name).toBe('Siderian');
+    expect(periods.intervals.at(-1)?.name).toBe('Quaternary');
+    for (let i = 1; i < periods.intervals.length; i++) {
+      expect(periods.intervals[i - 1]!.max_ma).toBeGreaterThanOrEqual(periods.intervals[i]!.max_ma);
+    }
+    // format() renders the same order for content[]-only clients.
+    const text = renderText(listIntervalsTool.format?.(periods as never));
+    expect(text.indexOf('Siderian')).toBeLessThan(text.indexOf('Quaternary'));
+
+    const cretaceous = listIntervalsTool.handler(
+      listIntervalsTool.input.parse({ name: 'cretaceous' }),
+      createMockContext({ errors: listIntervalsTool.errors }),
+    ) as { intervals: { name: string }[] };
+    expect(cretaceous.intervals.map((iv) => iv.name)).toEqual([
+      'Cretaceous',
+      'Early Cretaceous',
+      'Late Cretaceous',
+    ]);
   });
 
   it('format() renders the snapshot version header for citation', () => {
