@@ -1,9 +1,11 @@
 /**
  * @fileoverview In-memory index over the bundled ICS geologic time scale.
  *
- * Backs `paleobiology_list_intervals` with no network call and provides the
- * name↔Ma resolution other services use to echo both temporal representations.
- * The set is small and bounded (~171 intervals) — a plain index, not a
+ * Backs the offline half of `paleobiology_list_intervals`: browsing the scale and
+ * every name the ICS international scale carries resolves here with no network
+ * call. Names outside it — PBDB's sub-stage and regional scales — are resolved
+ * upstream by the tool handler, which owns that fallback so this stays a plain
+ * synchronous index. The set is small and bounded (~171 intervals) — not a
  * MirrorService or DataCanvas. Built once at startup via {@link initIntervalIndex}.
  * @module services/intervals/interval-index
  */
@@ -20,6 +22,36 @@ const norm = (s: string): string => s.trim().toLowerCase();
  * interval ahead of its children.
  */
 const oldestFirst = (a: Interval, b: Interval): number => b.max_ma - a.max_ma;
+
+/** The filters `paleobiology_list_intervals` narrows the time scale by. */
+export interface IntervalFilters {
+  level?: IntervalLevel;
+  maxMa?: number;
+  minMa?: number;
+  name?: string;
+}
+
+/**
+ * Apply the list tool's filters to any interval set, sorted oldest-first. All
+ * filters are ANDed; substring match on `name`, inclusive Ma overlap for the
+ * range, exact `level`.
+ *
+ * Module-level rather than a method so the same predicate and ordering apply to
+ * an interval resolved upstream, which never enters the bundled index.
+ */
+export function filterIntervals(intervals: readonly Interval[], opts: IntervalFilters): Interval[] {
+  const needle = opts.name ? norm(opts.name) : undefined;
+  return intervals
+    .filter((iv) => {
+      if (needle && !norm(iv.name).includes(needle)) return false;
+      if (opts.level && iv.level !== opts.level) return false;
+      // Overlap test against [minMa, maxMa] when either bound is supplied.
+      if (opts.minMa != null && iv.max_ma < opts.minMa) return false;
+      if (opts.maxMa != null && iv.min_ma > opts.maxMa) return false;
+      return true;
+    })
+    .sort(oldestFirst);
+}
 
 export class IntervalIndex {
   private readonly byNameExact = new Map<string, Interval>();
@@ -43,29 +75,13 @@ export class IntervalIndex {
   }
 
   /**
-   * Filter intervals for the list tool. All filters are ANDed; substring match
-   * on `name`, inclusive Ma overlap for the range, exact `level`. Sorted
-   * oldest-first, same as {@link all} — the bundled snapshot is in hierarchical
-   * eon→age traversal order (roughly youngest-first), so returning raw array
-   * order here would contradict the schema's oldest-first contract.
+   * Filter the bundled intervals for the list tool. Sorted oldest-first, same as
+   * {@link all} — the bundled snapshot is in hierarchical eon→age traversal order
+   * (roughly youngest-first), so returning raw array order here would contradict
+   * the schema's oldest-first contract.
    */
-  filter(opts: {
-    name?: string;
-    minMa?: number;
-    maxMa?: number;
-    level?: IntervalLevel;
-  }): Interval[] {
-    const needle = opts.name ? norm(opts.name) : undefined;
-    return this.intervals
-      .filter((iv) => {
-        if (needle && !norm(iv.name).includes(needle)) return false;
-        if (opts.level && iv.level !== opts.level) return false;
-        // Overlap test against [minMa, maxMa] when either bound is supplied.
-        if (opts.minMa != null && iv.max_ma < opts.minMa) return false;
-        if (opts.maxMa != null && iv.min_ma > opts.maxMa) return false;
-        return true;
-      })
-      .sort(oldestFirst);
+  filter(opts: IntervalFilters): Interval[] {
+    return filterIntervals(this.intervals, opts);
   }
 
   /** All intervals, optionally restricted to one level. Sorted oldest-first. */

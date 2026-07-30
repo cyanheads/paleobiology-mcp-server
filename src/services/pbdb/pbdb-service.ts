@@ -45,6 +45,11 @@
  *    reports a boolean `children_truncated` instead — same request count, honest
  *    disclosure, and the caller pages with `childrenOffset` rather than needing an
  *    exact count.
+ *  - `intervals/list` answers an unknown interval name with HTTP 200, an empty
+ *    `records[]`, and a `warnings[]` note — not a 404 — so a name miss is read off
+ *    the record count rather than off a thrown error, and needs no
+ *    `expectedStatuses` entry. Its records carry `scale_no` but no scale name;
+ *    that directory is a separate `timescales/list` call, cached per process.
  * @module services/pbdb/pbdb-service
  */
 
@@ -66,16 +71,19 @@ import type {
   DiversityFilter,
   DiversityResult,
   EnvironmentFilter,
+  Interval,
   Occurrence,
   OccurrenceFilter,
   OccurrenceSearch,
   PbdbCollectionRecord,
   PbdbDiversityRecord,
   PbdbEnvelope,
+  PbdbIntervalRecord,
   PbdbOccurrenceRecord,
   PbdbResponse,
   PbdbSearchMeta,
   PbdbTaxonRecord,
+  PbdbTimescaleRecord,
   Taxon,
   TaxonClassification,
   TaxonLookup,
@@ -154,6 +162,8 @@ function classificationOf(r: {
 export class PbdbService {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  /** Lazily-filled `scale_no` → scale-name directory. See {@link PbdbService.timeScaleNames}. */
+  private scaleNames?: ReadonlyMap<number, string>;
 
   constructor(_config: AppConfig) {
     const cfg = getServerConfig();
@@ -470,6 +480,54 @@ export class PbdbService {
     if (meta.warnings) result.warnings = meta.warnings;
     return result;
   }
+
+  // ── Intervals ────────────────────────────────────────────────────────────────
+
+  /**
+   * Resolve one interval by exact name across every PBDB time scale — the
+   * sub-stage and regional names (`Late Maastrichtian`, `Lancian`) that occurrence
+   * and collection rows report but the bundled ICS snapshot does not carry.
+   *
+   * `undefined` means PBDB has no interval by that name. Unlike the single-record
+   * endpoints, `intervals/list` answers an unknown name with HTTP 200 + an empty
+   * `records[]` and a `warnings[]` note, so a miss never reaches
+   * {@link sanitizeUpstreamError} and needs no `expectedStatuses` entry. The match
+   * is exact (case-insensitive) and returns at most one record even for a name
+   * carried by several scales.
+   *
+   * The scale name comes from a second endpoint — `intervals/list` emits only
+   * `scale_no`, and a bare number does not tell an agent it is off the
+   * international scale. The 65-row directory is fetched once per process and
+   * cached (scale names change on the order of never), and rides along in the
+   * same `Promise.all` so a first lookup costs one round trip, not two.
+   */
+  async lookupInterval(name: string, ctx: Context): Promise<Interval | undefined> {
+    const [{ records }, scaleNames] = await Promise.all([
+      this.get<PbdbIntervalRecord>('intervals/list', { name }, ctx, 'lookupInterval'),
+      this.timeScaleNames(ctx),
+    ]);
+    const rec = records[0];
+    return rec ? normalizeInterval(rec, scaleNames) : undefined;
+  }
+
+  /** The `scale_no` → scale-name directory, fetched once per process. */
+  private async timeScaleNames(ctx: Context): Promise<ReadonlyMap<number, string>> {
+    if (this.scaleNames) return this.scaleNames;
+    const { records } = await this.get<PbdbTimescaleRecord>(
+      'timescales/list',
+      { all_records: 1 },
+      ctx,
+      'listTimeScales',
+    );
+    const names = new Map<number, string>();
+    for (const r of records) {
+      const no = intId(r.scale_no);
+      if (no != null && r.scale_name) names.set(no, r.scale_name);
+    }
+    // Only a successful fetch is cached — a failed one must not pin an empty map.
+    this.scaleNames = names;
+    return names;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -603,6 +661,40 @@ export function normalizeDiversityBin(r: PbdbDiversityRecord): DiversityBin {
     range_through: xBt,
     n_occurrences: num(r.n_occs) ?? 0,
   };
+}
+
+/**
+ * Normalize a raw interval record. PBDB's `b_age`/`t_age` are the older/younger
+ * boundaries and map to the domain's `max_ma`/`min_ma`. A record missing its id,
+ * name, rank, or either boundary is unusable — the whole point of the lookup is
+ * the name↔Ma translation — so it fails loud rather than emit a half-interval.
+ */
+export function normalizeInterval(
+  r: PbdbIntervalRecord,
+  scaleNames: ReadonlyMap<number, string>,
+): Interval {
+  const intervalNo = intId(r.interval_no);
+  const maxMa = num(r.b_age);
+  const minMa = num(r.t_age);
+  if (intervalNo == null || !r.interval_name || !r.type || maxMa == null || minMa == null) {
+    throw serviceUnavailable(
+      'PBDB returned an interval without its id, name, rank, or Ma boundaries.',
+    );
+  }
+  const iv: Interval = {
+    interval_no: intervalNo,
+    name: r.interval_name,
+    level: r.type,
+    max_ma: maxMa,
+    min_ma: minMa,
+  };
+  const parentNo = intId(r.parent_no);
+  if (parentNo != null) iv.parent_no = parentNo;
+  if (r.color) iv.color = r.color;
+  const scaleNo = intId(r.scale_no);
+  const scale = scaleNo != null ? scaleNames.get(scaleNo) : undefined;
+  if (scale) iv.scale = scale;
+  return iv;
 }
 
 /** Normalize a raw collection record, preserving absence. */

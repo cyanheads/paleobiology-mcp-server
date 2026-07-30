@@ -41,8 +41,16 @@ export type DiversityResolution = 'period' | 'epoch' | 'age';
 /** Taxa to count in a diversity curve. */
 export type DiversityCount = 'genera' | 'species' | 'families';
 
-/** Geologic-interval level in the bundled time scale. */
+/** Geologic-interval level in the bundled ICS time scale — the ranks the list tool filters on. */
 export type IntervalLevel = 'eon' | 'era' | 'period' | 'epoch' | 'age';
+
+/**
+ * The rank of any interval, bundled or upstream. The bundled ICS scale uses only
+ * the five {@link IntervalLevel} values; PBDB's other 64 time scales add `subage`,
+ * `subepoch`, `zone`, `subzone`, `chron`, `subchron`, and `bin`, so an interval
+ * resolved upstream widens to `string` — same treatment as {@link TaxonRank}.
+ */
+export type IntervalRank = IntervalLevel | (string & {});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Raw upstream records (vocab=pbdb)
@@ -149,6 +157,32 @@ export interface PbdbCollectionRecord {
   n_occs?: number | string;
   reference_no?: string;
   state?: string;
+}
+
+/**
+ * Raw `/intervals/list` record (vocab=pbdb).
+ *
+ * `b_age` is the older (bottom) boundary, `t_age` the younger (top) one — the
+ * inverse naming of the domain `max_ma`/`min_ma`. `parent_no` and `color` are
+ * populated on the international scale and largely absent on the regional and
+ * sub-stage ones; the endpoint has no `abbrev` at all.
+ */
+export interface PbdbIntervalRecord {
+  b_age?: number;
+  color?: string;
+  interval_name?: string;
+  interval_no: string;
+  parent_no?: string;
+  reference_no?: string;
+  scale_no?: string;
+  t_age?: number;
+  type?: string;
+}
+
+/** Raw `/timescales/list` record (vocab=pbdb) — the scale_no → scale_name directory. */
+export interface PbdbTimescaleRecord {
+  scale_name?: string;
+  scale_no: string;
 }
 
 /**
@@ -297,16 +331,25 @@ export interface DiversityBin {
   sampled_in_bin: number;
 }
 
-/** One geologic time interval (from the bundled snapshot). */
+/**
+ * One geologic time interval — from the bundled ICS snapshot, or resolved
+ * upstream when the snapshot has no interval by that name.
+ */
 export interface Interval {
   abbrev?: string;
   color?: string;
   interval_no: number;
-  level: IntervalLevel;
+  level: IntervalRank;
   max_ma: number;
   min_ma: number;
   name: string;
   parent_no?: number;
+  /**
+   * The PBDB time scale this interval belongs to (e.g. "Mesozoic Subages").
+   * Set only on an upstream-resolved interval — every bundled interval is on the
+   * International Chronostratigraphic Timescale, which `snapshot_version` names.
+   */
+  scale?: string;
 }
 
 /** A fossil collection (locality). */

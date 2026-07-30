@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** paleobiology-mcp-server
-**Version:** 0.3.3
+**Version:** 0.3.4
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.0`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
@@ -14,7 +14,8 @@
 > DataCanvas, queried via `dataframe_query` / `dataframe_describe`, freed via the
 > opt-in `dataframe_drop`), `get_diversity` (origination/extinction curve through time),
 > `search_collections` (fossil localities), and `list_intervals` (the bundled ICS geologic
-> time scale — offline). No auth, no API key. Domain env vars: `PBDB_BASE_URL`,
+> time scale — offline, with a PBDB fallback for sub-stage and regional names outside it).
+> No auth, no API key. Domain env vars: `PBDB_BASE_URL`,
 > `PBDB_TIMEOUT_MS`, `PBDB_MAX_OCCURRENCES`, `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED`.
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.

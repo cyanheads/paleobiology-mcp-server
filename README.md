@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.3.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/paleobiology-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/paleobiology-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/paleobiology-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.3.4-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/paleobiology-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/paleobiology-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/paleobiology-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -30,7 +30,7 @@ Eight tools (seven by default) — five domain tools for the Paleobiology Databa
 | `paleobiology_search_occurrences` | Search fossil occurrences by taxon, geologic time, geography, and depositional environment. Every row carries both modern and paleo coordinates. The flagship; broad results spill to a DataCanvas for SQL. |
 | `paleobiology_get_taxon` | Resolve a taxon by name or `taxon_no` to its accepted name, rank, classification, parent, occurrence count, and first/last-appearance (FAD/LAD) range. Run first to resolve names for the other tools. |
 | `paleobiology_get_diversity` | Compute a diversity / origination / extinction curve for a clade across geologic time, binned by period, epoch, or age. Returns the full bin set inline. |
-| `paleobiology_list_intervals` | Look up the geologic time scale — eons through ages with absolute-age (Ma) boundaries and nesting. Translates named intervals ↔ Ma. Served from a bundled ICS snapshot; no network call. |
+| `paleobiology_list_intervals` | Look up the geologic time scale — eons through ages with absolute-age (Ma) boundaries and nesting. Translates named intervals ↔ Ma. Served offline from a bundled ICS snapshot; a name outside it costs one PBDB lookup across the sub-stage and regional scales. |
 | `paleobiology_search_collections` | Find fossil collections (localities) by area and geologic time, with their formation, lithology, depositional environment, and co-occurring-fossils count. Paged inline. |
 | `paleobiology_dataframe_query` | Run a read-only SQL `SELECT` over occurrence sets staged on a DataCanvas by `paleobiology_search_occurrences`. SELECT only. |
 | `paleobiology_dataframe_describe` | List the tables and columns staged on a DataCanvas. Call before `paleobiology_dataframe_query` to discover table and column names. |
@@ -115,7 +115,7 @@ Built on [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp
 Paleobiology-specific:
 
 - Type-safe client for the Paleobiology Database (PBDB) REST API, requesting `vocab=pbdb` so readable field names come straight from upstream instead of hand-mapped terse codes
-- Bundled ICS geologic time-scale snapshot — `paleobiology_list_intervals` resolves named intervals ↔ absolute Ma boundaries with no network call
+- Bundled ICS geologic time-scale snapshot — `paleobiology_list_intervals` resolves the international scale's named intervals ↔ absolute Ma boundaries with no network call, and falls back to a PBDB lookup for the sub-stage and regional names that occurrence and collection rows report (`Late Maastrichtian`, `Lancian`), labeling each answer with its source and scale
 - DataCanvas spill for broad occurrence queries: an inline preview plus a staged table queryable with read-only SQL (count by interval, group by formation/country, roll up by family from the `classification` JSON column)
 
 Agent-friendly output:

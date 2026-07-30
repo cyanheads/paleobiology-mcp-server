@@ -5,7 +5,9 @@
  * sparse payloads (PBDB routinely omits paleo-coords, late_interval, formation —
  * absent fields stay absent, never defaulted), and the inverse case: a diversity
  * bin's interval/max_ma/min_ma are always present, so a record missing them is
- * rejected rather than emitted temporally anonymous.
+ * rejected rather than emitted temporally anonymous — the same rule applies to an
+ * upstream-resolved interval, whose b_age/t_age invert into max_ma/min_ma and
+ * whose scale_no resolves to a scale name.
  * @module tests/services/pbdb-normalizers
  */
 
@@ -13,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 import {
   normalizeCollection,
   normalizeDiversityBin,
+  normalizeInterval,
   normalizeOccurrence,
   normalizeTaxon,
   normalizeTaxonStub,
@@ -20,6 +23,7 @@ import {
 import type {
   PbdbCollectionRecord,
   PbdbDiversityRecord,
+  PbdbIntervalRecord,
   PbdbOccurrenceRecord,
   PbdbTaxonRecord,
 } from '@/services/pbdb/types.js';
@@ -271,5 +275,88 @@ describe('normalizeCollection', () => {
     expect(c).not.toHaveProperty('lithology');
     expect(c).not.toHaveProperty('environment');
     expect(c).not.toHaveProperty('formation');
+  });
+});
+
+describe('normalizeInterval', () => {
+  const scaleNames = new Map([
+    [1, 'International Chronostratigraphic Timescale'],
+    [12, 'Mesozoic Subages'],
+    [100, 'Cretaceous North American Land-Mammal Ages'],
+  ]);
+
+  it('maps b_age/t_age to max_ma/min_ma and labels the scale', () => {
+    // PBDB interval 654, as `intervals/list?name=Late Maastrichtian` returns it.
+    const raw: PbdbIntervalRecord = {
+      interval_no: '654',
+      scale_no: '12',
+      interval_name: 'Late Maastrichtian',
+      type: 'subage',
+      t_age: 66,
+      b_age: 72.2,
+      reference_no: '9098',
+    };
+    expect(normalizeInterval(raw, scaleNames)).toEqual({
+      interval_no: 654,
+      name: 'Late Maastrichtian',
+      level: 'subage',
+      max_ma: 72.2,
+      min_ma: 66,
+      scale: 'Mesozoic Subages',
+    });
+  });
+
+  it('carries parent_no and color when the scale defines them', () => {
+    const raw: PbdbIntervalRecord = {
+      interval_no: '112',
+      scale_no: '1',
+      interval_name: 'Maastrichtian',
+      type: 'age',
+      parent_no: '39',
+      color: '#F2FA8C',
+      t_age: 66,
+      b_age: 72.2,
+    };
+    const iv = normalizeInterval(raw, scaleNames);
+    expect(iv.parent_no).toBe(39);
+    expect(iv.color).toBe('#F2FA8C');
+    expect(iv.scale).toBe('International Chronostratigraphic Timescale');
+  });
+
+  it('omits the scale label when the scale_no is not in the directory', () => {
+    const raw: PbdbIntervalRecord = {
+      interval_no: '9999',
+      scale_no: '4242',
+      interval_name: 'Newscalian',
+      type: 'zone',
+      t_age: 5,
+      b_age: 9,
+    };
+    const iv = normalizeInterval(raw, scaleNames);
+    expect(iv).not.toHaveProperty('scale');
+    expect(iv.level).toBe('zone');
+  });
+
+  it('keeps a zero t_age rather than dropping the younger boundary', () => {
+    const raw: PbdbIntervalRecord = {
+      interval_no: '32',
+      scale_no: '1',
+      interval_name: 'Holocene',
+      type: 'epoch',
+      t_age: 0,
+      b_age: 0.0117,
+    };
+    expect(normalizeInterval(raw, scaleNames).min_ma).toBe(0);
+  });
+
+  it('rejects an interval missing a Ma boundary rather than emitting a half-range', () => {
+    const raw: PbdbIntervalRecord = {
+      interval_no: '654',
+      scale_no: '12',
+      interval_name: 'Late Maastrichtian',
+      type: 'subage',
+      t_age: 66,
+    };
+    expect(() => normalizeInterval(raw, scaleNames)).toThrow(/Ma boundaries/);
   });
 });
