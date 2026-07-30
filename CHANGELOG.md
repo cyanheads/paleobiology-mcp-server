@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.3](changelog/0.3.x/0.3.3.md) — 2026-07-30
+
+search_occurrences gains offset paging with exact next-page notices; search_occurrences, search_collections, and get_diversity accept base_id as a clade filter alongside base_name; get_taxon's show_children pages past 200 with children_offset/children_truncated.
+
 ## [0.3.2](changelog/0.3.x/0.3.2.md) — 2026-07-30
 
 search_occurrences, search_collections, and get_diversity surface PBDB's warnings[] instead of discarding them; both list searches send rowcount so totalCount and truncation reflect the true upstream match count rather than a page-filled guess.

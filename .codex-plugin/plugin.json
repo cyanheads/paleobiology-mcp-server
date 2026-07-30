@@ -1,6 +1,6 @@
 {
   "name": "paleobiology-mcp-server",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Search fossil occurrences, taxon ranges, diversity through deep time, and the geologic time scale.",
   "author": {
     "name": "cyanheads",
