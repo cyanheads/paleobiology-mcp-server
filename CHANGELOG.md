@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.4](changelog/0.3.x/0.3.4.md) — 2026-07-30
+
+paleobiology_list_intervals falls back to a live PBDB lookup for sub-stage and regional interval names the bundled ICS snapshot does not carry, labeling each answer with its source and time scale.
+
 ## [0.3.3](changelog/0.3.x/0.3.3.md) — 2026-07-30
 
 search_occurrences gains offset paging with exact next-page notices; search_occurrences, search_collections, and get_diversity accept base_id as a clade filter alongside base_name; get_taxon's show_children pages past 200 with children_offset/children_truncated.
