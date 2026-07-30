@@ -1,6 +1,6 @@
 # paleobiology-mcp-server - Directory Structure
 
-Generated on: 2026-07-30 14:42:00
+Generated on: 2026-07-30 16:14:09
 
 ```text
 paleobiology-mcp-server/
@@ -140,16 +140,17 @@ paleobiology-mcp-server/
 │   │   │       ├── occurrence.resource.ts
 │   │   │       └── taxon.resource.ts
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── dataframe-describe.tool.ts
-│   │           ├── dataframe-drop.tool.ts
-│   │           ├── dataframe-query.tool.ts
-│   │           ├── get-diversity.tool.ts
-│   │           ├── get-taxon.tool.ts
-│   │           ├── index.ts
-│   │           ├── list-intervals.tool.ts
-│   │           ├── search-collections.tool.ts
-│   │           └── search-occurrences.tool.ts
+│   │       ├── definitions/
+│   │       │   ├── dataframe-describe.tool.ts
+│   │       │   ├── dataframe-drop.tool.ts
+│   │       │   ├── dataframe-query.tool.ts
+│   │       │   ├── get-diversity.tool.ts
+│   │       │   ├── get-taxon.tool.ts
+│   │       │   ├── index.ts
+│   │       │   ├── list-intervals.tool.ts
+│   │       │   ├── search-collections.tool.ts
+│   │       │   └── search-occurrences.tool.ts
+│   │       └── pbdb-notices.ts
 │   ├── services/
 │   │   ├── intervals/
 │   │   │   ├── interval-index.ts

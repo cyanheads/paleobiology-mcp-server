@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.2](changelog/0.3.x/0.3.2.md) — 2026-07-30
+
+search_occurrences, search_collections, and get_diversity surface PBDB's warnings[] instead of discarding them; both list searches send rowcount so totalCount and truncation reflect the true upstream match count rather than a page-filled guess.
+
 ## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-07-30
 
 search_occurrences, search_collections, and get_diversity reject invalid bounding boxes and inverted Ma ranges before querying PBDB; occurrence rows and get_taxon gain classification and CC BY attribution; canvas_id is returned only on an actual spill; list_intervals sorts filtered results oldest-first.
