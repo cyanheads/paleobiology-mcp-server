@@ -19,6 +19,12 @@
 
 </div>
 
+<div align="center">
+
+**Public Hosted Server:** [https://paleobiology.caseyjhand.com/mcp](https://paleobiology.caseyjhand.com/mcp)
+
+</div>
+
 ---
 
 ## Tools
@@ -127,6 +133,23 @@ Agent-friendly output:
 ---
 
 ## Getting started
+
+### Public Hosted Instance
+
+A public instance is available at `https://paleobiology.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
+
+```json
+{
+  "mcpServers": {
+    "paleobiology-mcp-server": {
+      "type": "streamable-http",
+      "url": "https://paleobiology.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+### Self-Hosted / Local
 
 Add one of the following to your MCP client configuration file. PBDB is keyless — no API key required.
 
