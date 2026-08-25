@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.5](changelog/0.3.x/0.3.5.md) — 2026-08-24
+
+Adopts @cyanheads/mcp-ts-core ^0.12.3 and MCP SDK v2 — HTTP serves protocol revision 2026-07-28, tool arguments reject undeclared keys, and the advertised outputSchema declares the error envelope.
+
 ## [0.3.4](changelog/0.3.x/0.3.4.md) — 2026-07-30
 
 paleobiology_list_intervals falls back to a live PBDB lookup for sub-stage and regional interval names the bundled ICS snapshot does not carry, labeling each answer with its source and time scale.

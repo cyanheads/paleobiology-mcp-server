@@ -1,6 +1,6 @@
 # paleobiology-mcp-server - Directory Structure
 
-Generated on: 2026-07-30 16:14:09
+Generated on: 2026-08-25 06:43:11
 
 ```text
 paleobiology-mcp-server/
@@ -161,6 +161,8 @@ paleobiology-mcp-server/
 │   │   └── canvas-accessor.ts
 │   └── index.ts
 ├── tests/
+│   ├── helpers/
+│   │   └── expect-error.ts
 │   ├── prompts/
 │   ├── resources/
 │   │   └── occurrence.resource.test.ts

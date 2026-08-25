@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "paleobiology-mcp-server",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Search fossil occurrences, taxon ranges, diversity through deep time, and the geologic time scale.",
   "author": { "name": "cyanheads", "url": "https://github.com/cyanheads" },
   "repository": {
