@@ -4,7 +4,7 @@
 # This stage installs all dependencies (including dev), builds the TypeScript
 # source code into JavaScript, and prepares the production assets.
 # ==============================================================================
-FROM oven/bun:1.3.14 AS build
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.0 AS build
 
 WORKDIR /usr/src/app
 
@@ -30,7 +30,7 @@ RUN bun run build
 # application. It uses a slim base image and only includes production
 # dependencies and build artifacts.
 # ==============================================================================
-FROM oven/bun:1.3.14-slim AS production
+FROM oven/bun:1.4.0-slim AS production
 
 WORKDIR /usr/src/app
 
@@ -50,9 +50,12 @@ LABEL org.opencontainers.image.source="https://github.com/cyanheads/paleobiology
 COPY package.json bun.lock ./
 
 # Install only production dependencies, ignoring any lifecycle scripts (like 'prepare')
-# that are not needed in the final production image.
+# that are not needed in the final production image. This installs every direct
+# runtime dependency, including the @duckdb/node-api binding that backs DataCanvas —
+# the canvas is gated at runtime by CANVAS_PROVIDER_TYPE, not at build time, so the
+# image always carries the binding and a deployment turns the feature on with an env var.
 RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --production --frozen-lockfile --ignore-scripts
+    bun install --production --omit=peer --frozen-lockfile --ignore-scripts
 
 # Conditionally install OpenTelemetry optional peer dependencies (Tier 3).
 # These are not bundled by default to keep the base image lean. Enable at build time
@@ -60,7 +63,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 ARG OTEL_ENABLED=true
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     if [ "$OTEL_ENABLED" = "true" ]; then \
-      bun add --omit=dev --ignore-scripts @hono/otel \
+      bun add --omit=dev --omit=peer --ignore-scripts @hono/otel \
         @opentelemetry/instrumentation-http \
         @opentelemetry/exporter-metrics-otlp-http \
         @opentelemetry/exporter-trace-otlp-http \
@@ -71,16 +74,6 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
         @opentelemetry/sdk-trace-node \
         @opentelemetry/semantic-conventions; \
     fi
-
-# DataCanvas (Tier 3, optional peer dep): copy the fully-resolved @duckdb tree
-# from the build stage. The production install above runs with --production, which
-# never installs an optional peer at all — a server started with
-# CANVAS_PROVIDER_TYPE=duckdb would then crash at runtime with the module missing.
-# The build stage resolved @duckdb on the same platform base, so its tree (including
-# the platform node-bindings package carrying duckdb.node) is the correct artifact.
-# The bindings ship as prebuilt optionalDependencies with no lifecycle scripts, so
-# --ignore-scripts on either install leaves them intact.
-COPY --from=build /usr/src/app/node_modules/@duckdb ./node_modules/@duckdb
 
 # Copy the compiled application code from the build stage
 COPY --from=build /usr/src/app/dist ./dist
