@@ -17,6 +17,7 @@ import { JsonRpcErrorCode, McpError, notFound } from '@cyanheads/mcp-ts-core/err
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Taxon } from '@/services/pbdb/types.js';
+import { expectMcpError } from '../helpers/expect-error.js';
 
 const getTaxon = vi.fn();
 
@@ -248,8 +249,7 @@ describe('paleobiology_get_taxon', () => {
     const ctx = createMockContext({ errors: getTaxonTool.errors });
     const input = getTaxonTool.input.parse({ name: 'Bogusname' });
 
-    const err = (await getTaxonTool.handler(input, ctx).catch((e) => e)) as McpError;
-    expect(err).toBeInstanceOf(McpError);
+    const err = await expectMcpError(() => getTaxonTool.handler(input, ctx));
     expect(err.code).toBe(JsonRpcErrorCode.NotFound);
     expect(err.data?.reason).toBe('taxon_not_found');
     // Hardening regression: none of the raw HTTP plumbing fields may surface.

@@ -16,6 +16,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DiversityBin, DiversityFilter } from '@/services/pbdb/types.js';
+import { expectMcpError } from '../helpers/expect-error.js';
 
 const getDiversity = vi.fn();
 
@@ -69,7 +70,7 @@ describe('paleobiology_get_diversity', () => {
 
   it('returns the full bin set inline and conforms to the output schema', async () => {
     getDiversity.mockResolvedValue({ bins: [cretaceousBin] });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDiversityTool.errors });
     const input = getDiversityTool.input.parse({ base_name: 'Dinosauria' });
     const result = await getDiversityTool.handler(input, ctx);
 
@@ -83,7 +84,7 @@ describe('paleobiology_get_diversity', () => {
     // PBDB returns the Mesozoic newest-first; the handler flips it to oldest-first
     // so structuredContent.bins matches the schema's documented order.
     getDiversity.mockResolvedValue({ bins: [cretaceousBin, jurassicBin, triassicBin] });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDiversityTool.errors });
     const input = getDiversityTool.input.parse({ base_name: 'Dinosauria', interval: 'Mesozoic' });
     const result = await getDiversityTool.handler(input, ctx);
 
@@ -103,7 +104,7 @@ describe('paleobiology_get_diversity', () => {
       captured = filter;
       return { bins: [] };
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDiversityTool.errors });
     const input = getDiversityTool.input.parse({
       base_name: 'Ammonoidea',
       max_ma: 251.9,
@@ -140,11 +141,7 @@ describe('paleobiology_get_diversity', () => {
     // loosening it means this tool needs a missing-filter guard it never had.
     const ctx = createMockContext({ errors: getDiversityTool.errors });
     const input = getDiversityTool.input.parse({ resolution: 'epoch' });
-    const err = (await getDiversityTool.handler(input, ctx).catch((e) => e)) as {
-      code: number;
-      message: string;
-      data?: Record<string, unknown>;
-    };
+    const err = await expectMcpError(() => getDiversityTool.handler(input, ctx));
     expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
     expect(err.data?.reason).toBe('missing_filter');
     expect(err.message).toBe(
@@ -156,11 +153,7 @@ describe('paleobiology_get_diversity', () => {
   it('rejects base_name + base_id together at the boundary (#20)', async () => {
     const ctx = createMockContext({ errors: getDiversityTool.errors });
     const input = getDiversityTool.input.parse({ base_name: 'Ammonoidea', base_id: 52775 });
-    const err = (await getDiversityTool.handler(input, ctx).catch((e) => e)) as {
-      code: number;
-      message: string;
-      data?: Record<string, unknown>;
-    };
+    const err = await expectMcpError(() => getDiversityTool.handler(input, ctx));
     expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
     expect(err.data?.reason).toBe('conflicting_taxon_filter');
     expect(err.message).toBe(
@@ -189,10 +182,7 @@ describe('paleobiology_get_diversity', () => {
       { base_name: 'Dinosauria', max_ma: 66, min_ma: 66 },
     ]) {
       const input = getDiversityTool.input.parse(raw);
-      const err = (await getDiversityTool.handler(input, ctx).catch((e) => e)) as {
-        code: number;
-        data?: Record<string, unknown>;
-      };
+      const err = await expectMcpError(() => getDiversityTool.handler(input, ctx));
       expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
       expect(err.data?.reason).toBe('inverted_ma_range');
       expect(JSON.stringify(err.data)).toMatch(/strictly less than max_ma/);
@@ -202,7 +192,7 @@ describe('paleobiology_get_diversity', () => {
 
   it('returns { bins: [] } (still valid) with a guidance notice on an empty result', async () => {
     getDiversity.mockResolvedValue({ bins: [] });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDiversityTool.errors });
     const input = getDiversityTool.input.parse({ base_name: 'Nothingium', interval: 'Holocene' });
     const result = await getDiversityTool.handler(input, ctx);
 
@@ -222,7 +212,7 @@ describe('paleobiology_get_diversity', () => {
         "The name 'Dinosauriaa' did not match the currently accepted variant of any name in the taxonomy table",
       ],
     });
-    const typoCtx = createMockContext();
+    const typoCtx = createMockContext({ errors: getDiversityTool.errors });
     await getDiversityTool.handler(
       getDiversityTool.input.parse({ base_name: 'Dinosauriaa' }),
       typoCtx,
@@ -232,7 +222,7 @@ describe('paleobiology_get_diversity', () => {
     expect(typoNotice).toContain("The name 'Dinosauriaa' did not match");
 
     getDiversity.mockResolvedValue({ bins: [] });
-    const emptyCtx = createMockContext();
+    const emptyCtx = createMockContext({ errors: getDiversityTool.errors });
     await getDiversityTool.handler(
       getDiversityTool.input.parse({ base_name: 'Dinosauria', interval: 'Holocene' }),
       emptyCtx,
@@ -248,7 +238,7 @@ describe('paleobiology_get_diversity', () => {
       bins: [cretaceousBin],
       warnings: ['the value of parameter "interval" was not recognized'],
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDiversityTool.errors });
     await getDiversityTool.handler(
       getDiversityTool.input.parse({ base_name: 'Dinosauria', interval: 'Nonsensian' }),
       ctx,

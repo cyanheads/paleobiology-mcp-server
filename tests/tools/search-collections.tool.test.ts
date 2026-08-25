@@ -16,6 +16,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Collection, CollectionFilter, CollectionResult } from '@/services/pbdb/types.js';
+import { expectMcpError } from '../helpers/expect-error.js';
 
 const searchCollections = vi.fn();
 
@@ -130,11 +131,7 @@ describe('paleobiology_search_collections', () => {
       base_name: 'Tyrannosaurus',
       base_id: 38613,
     });
-    const err = (await searchCollectionsTool.handler(input, ctx).catch((e) => e)) as {
-      code: number;
-      message: string;
-      data?: Record<string, unknown>;
-    };
+    const err = await expectMcpError(() => searchCollectionsTool.handler(input, ctx));
     expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
     expect(err.data?.reason).toBe('conflicting_taxon_filter');
     expect(err.message).toBe(
@@ -151,10 +148,7 @@ describe('paleobiology_search_collections', () => {
       { base_name: 'Dinosauria', lngmax: -60 },
     ]) {
       const input = searchCollectionsTool.input.parse(raw);
-      const err = (await searchCollectionsTool.handler(input, ctx).catch((e) => e)) as {
-        code: number;
-        data?: Record<string, unknown>;
-      };
+      const err = await expectMcpError(() => searchCollectionsTool.handler(input, ctx));
       expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
       expect(err.data?.reason).toBe('incomplete_bbox');
       expect(JSON.stringify(err.data)).toMatch(/lngmin AND lngmax/);
@@ -169,10 +163,7 @@ describe('paleobiology_search_collections', () => {
       { base_name: 'Dinosauria', max_ma: 66, min_ma: 66 },
     ]) {
       const input = searchCollectionsTool.input.parse(raw);
-      const err = (await searchCollectionsTool.handler(input, ctx).catch((e) => e)) as {
-        code: number;
-        data?: Record<string, unknown>;
-      };
+      const err = await expectMcpError(() => searchCollectionsTool.handler(input, ctx));
       expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
       expect(err.data?.reason).toBe('inverted_ma_range');
       expect(JSON.stringify(err.data)).toMatch(/strictly less than max_ma/);

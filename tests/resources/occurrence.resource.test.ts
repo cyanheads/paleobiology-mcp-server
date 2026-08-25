@@ -19,6 +19,7 @@ import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Occurrence, Taxon } from '@/services/pbdb/types.js';
 import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
+import { expectMcpError } from '../helpers/expect-error.js';
 
 const getOccurrence = vi.fn();
 const getTaxon = vi.fn();
@@ -34,6 +35,17 @@ const { occurrenceResource } = await import(
 const { taxonResource } = await import('@/mcp-server/resources/definitions/taxon.resource.js');
 const { getTaxonTool } = await import('@/mcp-server/tools/definitions/get-taxon.tool.js');
 
+/**
+ * Both resources declare a params schema; `params` is optional on
+ * `ResourceDefinition`, so pin it once here. A resource that ever loses its
+ * schema fails this file loudly instead of silently skipping validation.
+ */
+const occurrenceParams = occurrenceResource.params;
+const taxonParams = taxonResource.params;
+if (!occurrenceParams || !taxonParams) {
+  throw new Error('occurrence and taxon resources must declare a params schema.');
+}
+
 describe('paleobiology://occurrence/{occurrence_no}', () => {
   beforeEach(() => {
     getOccurrence.mockReset();
@@ -48,7 +60,7 @@ describe('paleobiology://occurrence/{occurrence_no}', () => {
     };
     getOccurrence.mockResolvedValue(occ);
     const ctx = createMockContext({ errors: occurrenceResource.errors });
-    const params = occurrenceResource.params.parse({ occurrence_no: '139292' });
+    const params = occurrenceParams.parse({ occurrence_no: '139292' });
     const result = await occurrenceResource.handler(params, ctx);
 
     expect(result).toMatchObject({ occurrence_no: 139292, accepted_name: 'Tyrannosaurus rex' });
@@ -59,24 +71,23 @@ describe('paleobiology://occurrence/{occurrence_no}', () => {
   it('credits PBDB on the payload — resources have no enrichment trailer to ride', async () => {
     getOccurrence.mockResolvedValue({ occurrence_no: 139292 } satisfies Occurrence);
     const ctx = createMockContext({ errors: occurrenceResource.errors });
-    const params = occurrenceResource.params.parse({ occurrence_no: '139292' });
+    const params = occurrenceParams.parse({ occurrence_no: '139292' });
     const result = (await occurrenceResource.handler(params, ctx)) as { attribution?: string };
     expect(result.attribution).toBe(PBDB_ATTRIBUTION);
     expect(result.attribution).toMatch(/CC BY 4\.0/);
   });
 
   it('rejects a non-integer occurrence_no at the param boundary', () => {
-    expect(() => occurrenceResource.params.parse({ occurrence_no: 'abc' })).toThrow();
-    expect(() => occurrenceResource.params.parse({ occurrence_no: '12.5' })).toThrow();
+    expect(() => occurrenceParams.parse({ occurrence_no: 'abc' })).toThrow();
+    expect(() => occurrenceParams.parse({ occurrence_no: '12.5' })).toThrow();
   });
 
   it('remaps a service not-found to the occurrence_not_found reason without leaking raw status', async () => {
     getOccurrence.mockRejectedValue(notFound('PBDB found no match during getOccurrence.'));
     const ctx = createMockContext({ errors: occurrenceResource.errors });
-    const params = occurrenceResource.params.parse({ occurrence_no: '999999999' });
+    const params = occurrenceParams.parse({ occurrence_no: '999999999' });
 
-    const err = (await occurrenceResource.handler(params, ctx).catch((e) => e)) as McpError;
-    expect(err).toBeInstanceOf(McpError);
+    const err = await expectMcpError(() => occurrenceResource.handler(params, ctx));
     expect(err.code).toBe(JsonRpcErrorCode.NotFound);
     expect(err.data?.reason).toBe('occurrence_not_found');
     expect(err.data).not.toHaveProperty('statusCode');
@@ -90,7 +101,7 @@ describe('paleobiology://occurrence/{occurrence_no}', () => {
       new McpError(JsonRpcErrorCode.ServiceUnavailable, 'PBDB is down.'),
     );
     const ctx = createMockContext({ errors: occurrenceResource.errors });
-    const params = occurrenceResource.params.parse({ occurrence_no: '1' });
+    const params = occurrenceParams.parse({ occurrence_no: '1' });
     await expect(occurrenceResource.handler(params, ctx)).rejects.toMatchObject({
       code: JsonRpcErrorCode.ServiceUnavailable,
     });
@@ -123,7 +134,7 @@ describe('paleobiology://taxon/{taxon_no}', () => {
   it('lifts FAD/LAD to the top level — never wraps them in a range{} object', async () => {
     getTaxon.mockResolvedValue(rangedTaxon());
     const ctx = createMockContext({ errors: taxonResource.errors });
-    const params = taxonResource.params.parse({ taxon_no: '54833' });
+    const params = taxonParams.parse({ taxon_no: '54833' });
     const result = await taxonResource.handler(params, ctx);
 
     expect(result).toMatchObject({
@@ -142,7 +153,7 @@ describe('paleobiology://taxon/{taxon_no}', () => {
     getTaxon.mockResolvedValue(rangedTaxon());
 
     const resourceResult = await taxonResource.handler(
-      taxonResource.params.parse({ taxon_no: '54833' }),
+      taxonParams.parse({ taxon_no: '54833' }),
       createMockContext({ errors: taxonResource.errors }),
     );
     const toolCtx = createMockContext({ errors: getTaxonTool.errors });
@@ -164,22 +175,22 @@ describe('paleobiology://taxon/{taxon_no}', () => {
   it('credits PBDB on the payload — resources have no enrichment trailer to ride', async () => {
     getTaxon.mockResolvedValue(rangedTaxon());
     const ctx = createMockContext({ errors: taxonResource.errors });
-    const params = taxonResource.params.parse({ taxon_no: '54833' });
+    const params = taxonParams.parse({ taxon_no: '54833' });
     const result = (await taxonResource.handler(params, ctx)) as { attribution?: string };
     expect(result.attribution).toBe(PBDB_ATTRIBUTION);
     expect(result.attribution).toMatch(/CC BY 4\.0/);
   });
 
   it('rejects a non-integer taxon_no at the param boundary', () => {
-    expect(() => taxonResource.params.parse({ taxon_no: 'Tyrannosaurus' })).toThrow();
+    expect(() => taxonParams.parse({ taxon_no: 'Tyrannosaurus' })).toThrow();
   });
 
   it('remaps a service not-found to the taxon_not_found reason without leaking raw status', async () => {
     getTaxon.mockRejectedValue(notFound('PBDB found no match during getTaxon.'));
     const ctx = createMockContext({ errors: taxonResource.errors });
-    const params = taxonResource.params.parse({ taxon_no: '88888888' });
+    const params = taxonParams.parse({ taxon_no: '88888888' });
 
-    const err = (await taxonResource.handler(params, ctx).catch((e) => e)) as McpError;
+    const err = await expectMcpError(() => taxonResource.handler(params, ctx));
     expect(err.code).toBe(JsonRpcErrorCode.NotFound);
     expect(err.data?.reason).toBe('taxon_not_found');
     expect(err.data).not.toHaveProperty('statusCode');

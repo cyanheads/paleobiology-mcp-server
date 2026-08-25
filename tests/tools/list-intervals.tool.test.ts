@@ -15,6 +15,7 @@ import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initIntervalIndex } from '@/services/intervals/interval-index.js';
 import type { Interval } from '@/services/pbdb/types.js';
+import { expectMcpError } from '../helpers/expect-error.js';
 
 const lookupInterval = vi.fn();
 
@@ -146,14 +147,13 @@ describe('paleobiology_list_intervals', () => {
     lookupInterval.mockResolvedValue(undefined);
     const ctx = createMockContext({ errors: listIntervalsTool.errors });
     const input = listIntervalsTool.input.parse({ name: 'Notaperiodxyz' });
-    const err = (await listIntervalsTool.handler(input, ctx).catch((e) => e)) as {
-      code: number;
-      data?: { reason?: string; recovery?: { hint?: string } };
-    };
+    const err = await expectMcpError(() => listIntervalsTool.handler(input, ctx));
     expect(lookupInterval).toHaveBeenCalledWith('Notaperiodxyz', ctx);
     expect(err.code).toBe(JsonRpcErrorCode.NotFound);
     expect(err.data?.reason).toBe('interval_not_found');
-    expect(err.data?.recovery?.hint).toMatch(/browse the international scale/);
+    expect(err.data).toMatchObject({
+      recovery: { hint: expect.stringMatching(/browse the international scale/) },
+    });
   });
 
   it('reports an unreachable PBDB as unavailable, never as a missing interval', async () => {
@@ -163,15 +163,13 @@ describe('paleobiology_list_intervals', () => {
     );
     const ctx = createMockContext({ errors: listIntervalsTool.errors });
     const input = listIntervalsTool.input.parse({ name: 'Late Maastrichtian' });
-    const err = (await listIntervalsTool.handler(input, ctx).catch((e) => e)) as {
-      code: number;
-      message: string;
-      data?: { reason?: string; recovery?: { hint?: string } };
-    };
+    const err = await expectMcpError(() => listIntervalsTool.handler(input, ctx));
     expect(err.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
     expect(err.data?.reason).toBe('interval_lookup_unavailable');
     expect(err.message).toContain('Late Maastrichtian');
-    expect(err.data?.recovery?.hint).toMatch(/Retry in a moment/);
+    expect(err.data).toMatchObject({
+      recovery: { hint: expect.stringMatching(/Retry in a moment/) },
+    });
     // The internal operation name must not ride out on the agent-facing error.
     expect(err.message).not.toContain('lookupInterval');
   });
@@ -268,10 +266,7 @@ describe('paleobiology_dataframe_query (canvas disabled)', () => {
     // No setCanvas() called → getCanvas() is undefined in this test process.
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
     const input = dataframeQueryTool.input.parse({ canvas_id: 'abc1234567', sql: 'SELECT 1' });
-    const err = await dataframeQueryTool.handler(input, ctx).then(
-      () => undefined,
-      (e) => e as { data?: { reason?: string } },
-    );
-    expect(err?.data?.reason).toBe('canvas_disabled');
+    const err = await expectMcpError(() => dataframeQueryTool.handler(input, ctx));
+    expect(err.data?.reason).toBe('canvas_disabled');
   });
 });

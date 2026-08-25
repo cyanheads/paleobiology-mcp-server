@@ -21,6 +21,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Occurrence, OccurrenceFilter, PbdbSearchMeta } from '@/services/pbdb/types.js';
+import { expectMcpError } from '../helpers/expect-error.js';
 
 const searchOccurrences = vi.fn();
 const getCanvas = vi.fn();
@@ -293,10 +294,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
       { base_name: 'Canis', lngmax: -60 },
     ]) {
       const input = searchOccurrencesTool.input.parse(raw);
-      const err = (await searchOccurrencesTool.handler(input, ctx).catch((e) => e)) as {
-        code: number;
-        data?: Record<string, unknown>;
-      };
+      const err = await expectMcpError(() => searchOccurrencesTool.handler(input, ctx));
       expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
       expect(err.data?.reason).toBe('incomplete_bbox');
       expect(JSON.stringify(err.data)).toMatch(/lngmin AND lngmax/);
@@ -331,10 +329,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
       { base_name: 'Tyrannosaurus', max_ma: 66, min_ma: 66 },
     ]) {
       const input = searchOccurrencesTool.input.parse(raw);
-      const err = (await searchOccurrencesTool.handler(input, ctx).catch((e) => e)) as {
-        code: number;
-        data?: Record<string, unknown>;
-      };
+      const err = await expectMcpError(() => searchOccurrencesTool.handler(input, ctx));
       expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
       expect(err.data?.reason).toBe('inverted_ma_range');
       expect(JSON.stringify(err.data)).toMatch(/strictly less than max_ma/);
@@ -419,11 +414,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
       base_name: 'Tyrannosaurus',
       base_id: 38613,
     });
-    const err = (await searchOccurrencesTool.handler(input, ctx).catch((e) => e)) as {
-      code: number;
-      message: string;
-      data?: Record<string, unknown>;
-    };
+    const err = await expectMcpError(() => searchOccurrencesTool.handler(input, ctx));
     expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
     expect(err.data?.reason).toBe('conflicting_taxon_filter');
     expect(err.message).toBe(

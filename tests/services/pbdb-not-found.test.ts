@@ -668,7 +668,7 @@ describe('PbdbService envelope metadata (warnings + rowcount totals)', () => {
     );
     const ctx = createMockContext();
     const search = service.searchOccurrences(
-      { limit: 2, baseName: 'Dinosauria', interval: 'Maastrichtian' },
+      { limit: 2, offset: 0, baseName: 'Dinosauria', interval: 'Maastrichtian' },
       ctx,
     );
     const rows = [];
@@ -701,7 +701,7 @@ describe('PbdbService envelope metadata (warnings + rowcount totals)', () => {
     fetchWithTimeout.mockReset();
     fetchWithTimeout.mockResolvedValue(okJson({ records: [], records_found: 0 }));
     const empty = service.searchOccurrences(
-      { limit: 100, baseName: 'Tyrannosaurus', interval: 'Cambrian' },
+      { limit: 100, offset: 0, baseName: 'Tyrannosaurus', interval: 'Cambrian' },
       ctx,
     );
     for await (const _ of empty.rows);
