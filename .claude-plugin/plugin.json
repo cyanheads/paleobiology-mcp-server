@@ -1,13 +1,17 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "paleobiology-mcp-server",
   "version": "0.3.5",
   "description": "Search fossil occurrences, taxon ranges, diversity through deep time, and the geologic time scale.",
   "author": {
-    "name": "cyanheads"
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
   },
   "homepage": "https://github.com/cyanheads/paleobiology-mcp-server",
   "repository": "https://github.com/cyanheads/paleobiology-mcp-server",
   "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "paleobiology", "fossils", "pbdb"],
   "mcpServers": {
     "paleobiology-mcp-server": {
       "command": "npx",
