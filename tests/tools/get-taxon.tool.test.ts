@@ -240,6 +240,15 @@ describe('paleobiology_get_taxon', () => {
     });
   });
 
+  it('declares taxon_not_found below error severity, missing_selector at the default', () => {
+    // A name that resolves to nothing is an ordinary lookup answer, not an
+    // incident — it stays out of the error stream operators alert on. The
+    // caller-input guard keeps the default error level.
+    const entries: readonly { reason: string; severity?: string }[] = getTaxonTool.errors ?? [];
+    expect(entries.find((e) => e.reason === 'taxon_not_found')?.severity).toBe('info');
+    expect(entries.find((e) => e.reason === 'missing_selector')?.severity).toBeUndefined();
+  });
+
   it('emits a typed not-found that does NOT leak the raw upstream status/requestId', async () => {
     // Simulate what reaches the handler after the service reclassified a PBDB
     // HTTP 400 — the service throws a clean notFound carrying only its reason.

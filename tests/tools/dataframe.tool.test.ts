@@ -182,6 +182,41 @@ describe('paleobiology_dataframe_drop', () => {
   });
 });
 
+describe('canvas_id input shape', () => {
+  const required = [
+    ['paleobiology_dataframe_query', dataframeQueryTool, { sql: 'SELECT 1' }],
+    ['paleobiology_dataframe_describe', dataframeDescribeTool, {}],
+    ['paleobiology_dataframe_drop', dataframeDropTool, { table_name: 't' }],
+  ] as const;
+
+  /*
+   * Every canvas_id INPUT is declared with CanvasIdSchema, so the minted
+   * ^[A-Za-z0-9_-]{10}$ shape is advertised in inputSchema and an impossible
+   * value is rejected at argument validation — the handler never runs, and the
+   * canvas registry's canvas_id_malformed never fires on these tools.
+   */
+  for (const [name, def, rest] of required) {
+    it(`${name} accepts a minted id and rejects a malformed one`, () => {
+      expect(def.input.parse({ canvas_id: 'aB3_x-9Zq0', ...rest }).canvas_id).toBe('aB3_x-9Zq0');
+      for (const bad of ['x', 'toolongcanvasid', 'abc123456!']) {
+        expect(() => def.input.parse({ canvas_id: bad, ...rest })).toThrow();
+      }
+    });
+  }
+
+  it('paleobiology_search_occurrences constrains canvas_id while keeping it optional', async () => {
+    const { searchOccurrencesTool } = await import(
+      '@/mcp-server/tools/definitions/search-occurrences.tool.js'
+    );
+    expect(
+      searchOccurrencesTool.input.parse({ base_name: 'Dinosauria' }).canvas_id,
+    ).toBeUndefined();
+    expect(() =>
+      searchOccurrencesTool.input.parse({ base_name: 'Dinosauria', canvas_id: 'nope' }),
+    ).toThrow();
+  });
+});
+
 /** Join a format() block list into a single string for substring assertions. */
 function renderText(blocks: { type: string; text?: string }[] | undefined): string {
   return (blocks ?? []).map((b) => (b.type === 'text' ? (b.text ?? '') : '')).join('\n');

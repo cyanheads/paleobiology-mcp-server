@@ -123,6 +123,10 @@ export const listIntervalsTool = tool('paleobiology_list_intervals', {
     {
       reason: 'interval_not_found',
       code: JsonRpcErrorCode.NotFound,
+      // An interval name that matches nothing is an ordinary answer on a lookup
+      // tool, not an incident — unlike interval_lookup_unavailable below, which is
+      // a real upstream fault and keeps the default error level.
+      severity: 'info',
       when: 'A named interval filter matched nothing — neither the bundled international scale (after any level or Ma filters) nor a PBDB lookup across its other time scales.',
       recovery:
         'Check the spelling, call paleobiology_list_intervals without a name to browse the international scale, or query by min_ma/max_ma instead.',

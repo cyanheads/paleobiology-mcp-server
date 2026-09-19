@@ -8,6 +8,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { CanvasIdSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCanvas } from '@/services/canvas-accessor.js';
 
@@ -36,9 +37,9 @@ export const dataframeQueryTool = tool('paleobiology_dataframe_query', {
     'writes and file-reading functions are rejected.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
-    canvas_id: z
-      .string()
-      .describe('Canvas id returned by paleobiology_search_occurrences when its result spilled.'),
+    canvas_id: CanvasIdSchema.describe(
+      'Canvas id returned by paleobiology_search_occurrences when its result spilled.',
+    ),
     sql: z
       .string()
       .describe(

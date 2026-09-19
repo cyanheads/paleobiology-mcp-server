@@ -7,6 +7,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { CanvasIdSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCanvas } from '@/services/canvas-accessor.js';
 
@@ -23,7 +24,9 @@ export const dataframeDropTool = tool('paleobiology_dataframe_drop', {
     openWorldHint: false,
   },
   input: z.object({
-    canvas_id: z.string().describe('Canvas id holding the table to drop.'),
+    canvas_id: CanvasIdSchema.describe(
+      'Canvas id holding the table to drop — returned by paleobiology_search_occurrences when its result spilled.',
+    ),
     table_name: z.string().describe('Name of the staged table to drop.'),
   }),
   output: z.object({

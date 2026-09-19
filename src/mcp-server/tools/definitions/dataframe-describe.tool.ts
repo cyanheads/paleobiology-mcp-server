@@ -6,6 +6,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { CanvasIdSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCanvas } from '@/services/canvas-accessor.js';
 
@@ -17,9 +18,9 @@ export const dataframeDescribeTool = tool('paleobiology_dataframe_describe', {
     'to reference in SQL.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
-    canvas_id: z
-      .string()
-      .describe('Canvas id returned by paleobiology_search_occurrences when its result spilled.'),
+    canvas_id: CanvasIdSchema.describe(
+      'Canvas id returned by paleobiology_search_occurrences when its result spilled.',
+    ),
   }),
   output: z.object({
     tables: z

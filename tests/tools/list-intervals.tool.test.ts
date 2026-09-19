@@ -156,6 +156,17 @@ describe('paleobiology_list_intervals', () => {
     });
   });
 
+  it('declares interval_not_found below error severity, the unreachable-PBDB reason at the default', () => {
+    // A name miss is an ordinary lookup answer; an unreachable PBDB is a real
+    // upstream fault and must stay in the error stream operators alert on.
+    const entries: readonly { reason: string; severity?: string }[] =
+      listIntervalsTool.errors ?? [];
+    expect(entries.find((e) => e.reason === 'interval_not_found')?.severity).toBe('info');
+    expect(
+      entries.find((e) => e.reason === 'interval_lookup_unavailable')?.severity,
+    ).toBeUndefined();
+  });
+
   it('reports an unreachable PBDB as unavailable, never as a missing interval', async () => {
     // Conflating the two would tell the agent a real interval does not exist.
     lookupInterval.mockRejectedValue(

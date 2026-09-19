@@ -21,6 +21,15 @@ await createApp({
   title: 'paleobiology-mcp-server',
   tools: allToolDefinitions,
   resources: allResourceDefinitions,
+  /**
+   * No handler calls ctx.requestInput and nothing is held between calls — the
+   * interval index and PBDB client are process-wide, and a staged occurrence set
+   * lives on the tenant-scoped canvas, not in a session. Declared here rather
+   * than left to the MCP_SESSION_MODE schema default (auto → stateful), so a
+   * source run resolves the same mode the Dockerfile pins. A deployment can
+   * still override with a meaningful MCP_SESSION_MODE.
+   */
+  sessionMode: 'stateless',
   instructions:
     'Fossil biodiversity over the Paleobiology Database (PBDB) across ~540 million years. ' +
     'Resolve a taxon name to its accepted name + integer taxon_no with paleobiology_get_taxon ' +

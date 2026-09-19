@@ -10,7 +10,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { spillover } from '@cyanheads/mcp-ts-core/canvas';
+import { CanvasIdSchema, spillover } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getServerConfig } from '@/config/server-config.js';
 import {
@@ -272,12 +272,9 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       .describe(
         'Number of matching occurrences to skip before this page — page with limit by advancing offset. The response notice names the exact offset that reaches the next page.',
       ),
-    canvas_id: z
-      .string()
-      .optional()
-      .describe(
-        'Canvas id from a prior call to re-stage onto the same workspace. Reusing it REPLACES (overwrites) the prior occurrence table — each search restages the full result, it does not append to or accumulate across earlier ones. Omit to start fresh; the response returns a new id.',
-      ),
+    canvas_id: CanvasIdSchema.optional().describe(
+      'Canvas id from a prior call to re-stage onto the same workspace. Reusing it REPLACES (overwrites) the prior occurrence table — each search restages the full result, it does not append to or accumulate across earlier ones. Omit to start fresh; the response returns a new id.',
+    ),
   }),
   output: SearchOccurrencesOutputSchema,
   enrichment: {

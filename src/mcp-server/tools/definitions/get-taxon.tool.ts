@@ -216,6 +216,9 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
     {
       reason: 'taxon_not_found',
       code: JsonRpcErrorCode.NotFound,
+      // A name that resolves to nothing is an ordinary answer on a lookup tool, not
+      // an incident — keep it out of the error stream operators alert on.
+      severity: 'info',
       when: 'The name or taxon_no resolved to no PBDB taxon.',
       recovery:
         'If searching by name, check the spelling or try a higher rank (genus → family). If searching by taxon_no, re-run paleobiology_get_taxon by name to obtain a valid id.',
