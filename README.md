@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.3.6-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/paleobiology-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/paleobiology-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/paleobiology-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.3.6-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/paleobiology-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.2.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/paleobiology-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/paleobiology-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -59,50 +59,40 @@ All resource data is also reachable via tools — the resources mirror a single-
 
 ### `paleobiology_search_occurrences` <sub>tool</sub>
 
-- `base_name` (a clade and all its descendants) or `taxon_name` (exact) filters the taxon; `base_id` filters the same clade by its resolved PBDB `taxon_no` instead of a name — exactly one of `base_name`/`base_id`, never both
-- Age by a named `interval` or a `max_ma`/`min_ma` range (`min_ma` strictly less than `max_ma`), plus an optional lng/lat bounding box (`lngmin`/`lngmax` both or neither; a lone `latmin`/`latmax` is valid) and `environment` (`marine`, `terrestrial`, `freshwater`); `collection_no` scopes to one locality. At least one filter is required
-- Every row carries both **modern** lng/lat (where the rock is today) and **paleo** lng/lat (where the landmass sat at deposition), plus formation, age interval, and higher classification (phylum–genus)
-- `limit` (max 500, default 100) and `offset` page against PBDB's true match count; the response names the exact offset for the next page
-- Broad results spill to a DataCanvas — `canvas_id` and `table_name` return only when the page spills; reusing a `canvas_id` replaces that canvas's occurrence table rather than accumulating
-- Typed errors: `missing_filter`, `conflicting_taxon_filter`, `incomplete_bbox`, `inverted_ma_range` — all rejected at the tool boundary before the upstream request
+- Requires at least one taxon, time, geographic, environment, or `collection_no` filter. Use `base_name` or `base_id` for a clade, `taxon_name` for an exact match; page with `limit` (default 100, max 500) and `offset`
+- Returns modern and paleo coordinates, named intervals and Ma ages, strata, and higher classification. `totalCount` and the notice report PBDB's true match count and next offset; rejected filters carry `missing_filter`, `conflicting_taxon_filter`, `incomplete_bbox`, or `inverted_ma_range`
+- Large pages spill to DataCanvas and return `canvas_id` + `table_name` for SQL. Reusing a `canvas_id` replaces that canvas's occurrence table; a page that fits inline stages nothing
 
 ---
 
 ### `paleobiology_get_taxon` <sub>tool</sub>
 
-- Resolve by `name` or `taxon_no` (exactly one required) to accepted name, rank, higher classification, immediate parent, occurrence count, and FAD/LAD range in Ma
-- The returned `taxon_no` is the `base_id` accepted by `paleobiology_search_occurrences`, `paleobiology_get_diversity`, and `paleobiology_search_collections`
-- `show_children` pages immediate child taxa, up to 200 per call; `children_truncated` and `children_offset` say whether and where to continue
-- PBDB taxonomy can differ from GBIF's backbone — the accepted name may differ from the searched name
+- Resolve by `name` or `taxon_no` to accepted name, rank, classification, parent, occurrence count, and FAD/LAD range in Ma. The returned `taxon_no` is the `base_id` accepted by occurrence, diversity, and collection searches
+- `show_children` adds up to 200 immediate child taxa per call; `children_truncated` and `children_offset` say whether and where to continue
 - Typed errors: `taxon_not_found`, `missing_selector`
 
 ---
 
 ### `paleobiology_get_diversity` <sub>tool</sub>
 
-- Clade by `base_name` or `base_id` (exactly one required), bounded by a named `interval` or `max_ma`/`min_ma` range (`min_ma` strictly less than `max_ma`)
-- `count` enum: `genera` (default), `species`, `families`; `resolution` enum: `period` (default), `epoch`, `age`
-- Returns the full bin set inline, oldest-first, each bin carrying sampled/implied/origination/extinction/range-through counts and occurrence totals
-- Counts reflect **sampled** diversity, biased by collection effort and rock availability — not true past diversity
+- Requires a clade (`base_name` or `base_id`), optionally bounded by `interval` or `max_ma`/`min_ma`. Choose `count` (`genera`, `species`, `families`) and `resolution` (`period`, `epoch`, `age`); defaults are genera by period
+- Returns the full bin set inline, oldest-first, with sampled, implied, origination, extinction, range-through, and occurrence counts
 - Typed errors: `missing_filter`, `conflicting_taxon_filter`, `inverted_ma_range`
 
 ---
 
 ### `paleobiology_list_intervals` <sub>tool</sub>
 
-- Filter by a case-insensitive `name` substring, a `min_ma`/`max_ma` overlap window, and/or a `level` (`eon`, `era`, `period`, `epoch`, `age`); no filters browses the full scale
-- Every name on the bundled ICS international-scale snapshot resolves offline; a name outside it (sub-stage/regional names like "Late Maastrichtian") costs one PBDB lookup, and the response's `source` field (`bundled_ics` / `pbdb_upstream`) plus `snapshot_version` say which answered
-- Each interval returns its `level`, Ma boundaries, `parent_no`, and — when resolved upstream — the originating `scale` name
-- Typed errors: `interval_not_found` (name matched nothing anywhere), `interval_lookup_unavailable` (retryable — PBDB unreachable for a non-bundled name)
+- Filter by `name`, a `min_ma`/`max_ma` overlap window, or `level` (`eon`, `era`, `period`, `epoch`, `age`); omit filters to browse the bundled ICS scale
+- Returns interval rank, Ma boundaries, `parent_no`, and an upstream `scale` where available. `source` (`bundled_ics` / `pbdb_upstream`) and `snapshot_version` identify the source; names outside the snapshot use PBDB
+- Typed errors: `interval_not_found` for an unmatched name; retryable `interval_lookup_unavailable` when PBDB cannot resolve a name outside the snapshot
 
 ---
 
 ### `paleobiology_search_collections` <sub>tool</sub>
 
-- Filter by `base_name`/`base_id` (mutually exclusive), a named `interval` or `max_ma`/`min_ma` range, a lng/lat bounding box, a `formation` or `lithology` name, and/or `environment`; at least one filter is required
-- Each locality returns modern lng/lat, age (named interval and Ma), formation/group/member, lithology, depositional environment, and co-occurring-fossils count (`n_occs`)
-- `limit` (max 500, default 100) and `offset` page results; the response discloses when localities remain
-- Take a `collection_no` into `paleobiology_search_occurrences` to see the fauna found at that locality
+- Requires at least one taxon, time, geographic, `formation`, `lithology`, or `environment` filter. Page with `limit` (default 100, max 500) and `offset`
+- Returns locality coordinates, age, strata, lithology, environment, and `n_occs`, with totals and truncation guidance. Pass `collection_no` to `paleobiology_search_occurrences` for the fauna at that locality
 - Typed errors: `missing_filter`, `conflicting_taxon_filter`, `incomplete_bbox`, `inverted_ma_range`
 
 ---
@@ -126,7 +116,7 @@ All resource data is also reachable via tools — the resources mirror a single-
 ### `paleobiology_dataframe_drop` <sub>tool</sub>
 
 - Drops one staged table by `canvas_id` + `table_name` to free memory before its TTL expires; dropping a nonexistent table returns `dropped: false`, not an error
-- Opt-in — registered only when `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true`, absent from `tools/list` otherwise
+- Opt-in — callable only when `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true`, absent from `tools/list` otherwise; the manifest retains its enable hint
 - Typed error: `canvas_disabled` when `CANVAS_PROVIDER_TYPE` is not `duckdb`
 
 ---
@@ -157,6 +147,7 @@ PBDB-specific:
 - Bundled ICS geologic time-scale snapshot — `paleobiology_list_intervals` resolves the international scale's named intervals ↔ absolute Ma boundaries with no network call, falling back to a PBDB lookup for sub-stage and regional names
 - DataCanvas spill for broad occurrence queries: an inline preview plus a staged table queryable with read-only SQL (count by interval, group by formation/country, roll up by family from the `classification` JSON column)
 - No auth, no API key — PBDB is fully open (`MCP_AUTH_MODE` defaults to `none`)
+- PBDB's accepted taxonomy may differ from the searched name or other backbones. Diversity counts reflect sampling and collection effort, rather than true past diversity
 
 Agent-friendly output:
 
@@ -252,7 +243,7 @@ To enable SQL over large occurrence sets, set `CANVAS_PROVIDER_TYPE=duckdb` (the
 
 ### Prerequisites
 
-- [Bun v1.3](https://bun.sh/) or higher (or Node.js v24+).
+- [Bun v1.4](https://bun.sh/) or higher (or Node.js v24+).
 - No API key — the Paleobiology Database is fully open.
 
 ### Installation
@@ -292,13 +283,17 @@ All variables are optional — the server runs with no configuration against the
 | `PBDB_TIMEOUT_MS` | Per-request timeout in milliseconds. Diversity queries over large clades can be slow. | `30000` |
 | `PBDB_MAX_OCCURRENCES` | Hard cap on rows pulled per occurrence/collection call. | `1000` |
 | `CANVAS_PROVIDER_TYPE` | Set to `duckdb` to enable the DataCanvas spill path and `paleobiology_dataframe_*` tools. | `none` |
-| `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED` | Register `paleobiology_dataframe_drop`. Absent from `tools/list` when unset. | `false` |
+| `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED` | Enable `paleobiology_dataframe_drop`. Absent from `tools/list` when unset; the manifest retains its enable hint. | `false` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | Port for HTTP server. | `3010` |
 | `MCP_SESSION_MODE` | HTTP session posture: `stateless`, `stateful`, or `auto`. The server declares `stateless` in `src/index.ts` — it holds no per-session state — and this variable overrides that declaration. | `stateless` |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (RFC 5424). | `info` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry instrumentation](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry) (spans, metrics, completion logs). | `false` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base OTLP URL for traces and metrics. Logs require their own endpoint. | unset |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Enable OTLP log export to this exact URL. | unset |
+| `LOG_TOOL_FAILURE_PAYLOADS` | Log failed tool arguments and results, with key-name redaction; secrets in free-form values remain. | `false` |
+| `LOG_TOOL_FAILURE_PAYLOAD_MAX_BYTES` | UTF-8 byte cap per logged payload. | `16384` |
 
 See [`.env.example`](./.env.example) for the full list of optional overrides.
 

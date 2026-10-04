@@ -1,6 +1,6 @@
 # paleobiology-mcp-server - Directory Structure
 
-Generated on: 2026-09-19 20:37:15
+Generated on: 2026-10-04 05:56:15
 
 ```text
 paleobiology-mcp-server/
@@ -129,9 +129,11 @@ paleobiology-mcp-server/
 │   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
+│   ├── install-otel.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
 ├── src/
@@ -181,6 +183,7 @@ paleobiology-mcp-server/
 │       ├── get-diversity.tool.test.ts
 │       ├── get-taxon.tool.test.ts
 │       ├── list-intervals.tool.test.ts
+│       ├── occurrence-canvas.test.ts
 │       ├── search-collections.tool.test.ts
 │       └── search-occurrences.tool.test.ts
 ├── .dockerignore
