@@ -10,7 +10,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { CanvasIdSchema, spillover } from '@cyanheads/mcp-ts-core/canvas';
+import { CanvasIdSchema, type ColumnType, spillover } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getServerConfig } from '@/config/server-config.js';
 import {
@@ -27,6 +27,41 @@ const ENVIRONMENTS = ['marine', 'terrestrial', 'freshwater'] as const;
 
 /** Upper bound on the per-call `limit`, quoted in the schema and the paging notices. */
 const MAX_LIMIT = 500;
+
+/** Stable types preserve fractions and columns absent from the inline preview. */
+const OCCURRENCE_COLUMN_TYPES = {
+  occurrence_no: 'BIGINT',
+  collection_no: 'BIGINT',
+  identified_name: 'VARCHAR',
+  identified_rank: 'VARCHAR',
+  accepted_name: 'VARCHAR',
+  accepted_rank: 'VARCHAR',
+  accepted_no: 'BIGINT',
+  early_interval: 'VARCHAR',
+  late_interval: 'VARCHAR',
+  max_ma: 'DOUBLE',
+  min_ma: 'DOUBLE',
+  lng: 'DOUBLE',
+  lat: 'DOUBLE',
+  paleolng: 'DOUBLE',
+  paleolat: 'DOUBLE',
+  paleomodel: 'VARCHAR',
+  geoplate: 'VARCHAR',
+  formation: 'VARCHAR',
+  geological_group: 'VARCHAR',
+  member: 'VARCHAR',
+  cc: 'VARCHAR',
+  state: 'VARCHAR',
+  county: 'VARCHAR',
+  classification: 'JSON',
+  reference_no: 'BIGINT',
+} satisfies Record<keyof Occurrence, ColumnType>;
+
+const OCCURRENCE_CANVAS_SCHEMA = Object.entries(OCCURRENCE_COLUMN_TYPES).map(([name, type]) => ({
+  name,
+  type,
+  nullable: name !== 'occurrence_no',
+}));
 
 const OccurrenceSchema = z
   .object({
@@ -330,7 +365,6 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       throw ctx.fail(
         'missing_filter',
         'paleobiology_search_occurrences needs at least one filter (taxon, geologic time, place, environment, or collection_no) — PBDB rejects an unfiltered occurrence query.',
-        { ...ctx.recoveryFor('missing_filter') },
       );
     }
     if (input.base_name != null && input.base_id != null) {
@@ -427,6 +461,7 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     const result = await spillover({
       canvas: instance,
       source: search.rows,
+      schema: OCCURRENCE_CANVAS_SCHEMA,
       previewChars: 100_000, // ≈25k tokens inline
       tableName,
       signal: ctx.signal,
