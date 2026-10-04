@@ -4,7 +4,7 @@
 # This stage installs all dependencies (including dev), builds the TypeScript
 # source code into JavaScript, and prepares the production assets.
 # ==============================================================================
-FROM --platform=$BUILDPLATFORM oven/bun:1.4.0 AS build
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.2 AS build
 
 WORKDIR /usr/src/app
 
@@ -24,13 +24,56 @@ RUN bun run build
 
 
 # ==============================================================================
+# Production Dependencies Stage
+#
+# Cross-install on the build platform so the scanner and install scripts never
+# run under QEMU. Only the target platform's dependency tree enters the runtime.
+# ==============================================================================
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.2 AS deps
+
+WORKDIR /usr/src/app
+
+# Preserve the release-age gate and seed its development-only scanner.
+COPY package.json bun.lock bunfig.toml ./
+COPY --from=build /usr/src/app/node_modules/@socketsecurity/bun-security-scanner ./node_modules/@socketsecurity/bun-security-scanner
+
+ARG TARGETOS
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+      amd64) echo x64 ;; \
+      arm64) echo arm64 ;; \
+      *) echo "Unsupported TARGETARCH '$TARGETARCH': expected amd64 or arm64" >&2; exit 1 ;; \
+    esac > .bun-cpu
+
+# DuckDB is a direct runtime dependency; its target binding remains installed
+# regardless of whether CANVAS_PROVIDER_TYPE enables it at runtime.
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --production --omit=peer --frozen-lockfile --ignore-scripts \
+      --os="$TARGETOS" --cpu="$(cat .bun-cpu)"
+
+# Install OTel peers at the framework's declared ranges, through the same guards.
+COPY scripts/install-otel.ts ./scripts/
+ARG OTEL_ENABLED=true
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    if [ "$OTEL_ENABLED" = "true" ]; then \
+      bun scripts/install-otel.ts --os="$TARGETOS" --cpu="$(cat .bun-cpu)"; \
+    fi
+
+# The Debian runtime loads glibc bindings; Bun also installs musl variants.
+COPY scripts/prune-musl-packages.ts ./scripts/
+RUN bun scripts/prune-musl-packages.ts
+
+RUN rm -rf node_modules/@socketsecurity/bun-security-scanner
+
+
+# ==============================================================================
 # Production Stage
 #
 # This stage creates a minimal, optimized, and secure image for running the
 # application. It uses a slim base image and only includes production
 # dependencies and build artifacts.
 # ==============================================================================
-FROM oven/bun:1.4.0-slim AS production
+FROM oven/bun:1.4.2-slim AS production
 
 WORKDIR /usr/src/app
 
@@ -46,34 +89,9 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.version="${APP_VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/cyanheads/paleobiology-mcp-server"
 
-# Copy dependency manifests
-COPY package.json bun.lock ./
-
-# Install only production dependencies, ignoring any lifecycle scripts (like 'prepare')
-# that are not needed in the final production image. This installs every direct
-# runtime dependency, including the @duckdb/node-api binding that backs DataCanvas —
-# the canvas is gated at runtime by CANVAS_PROVIDER_TYPE, not at build time, so the
-# image always carries the binding and a deployment turns the feature on with an env var.
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --production --omit=peer --frozen-lockfile --ignore-scripts
-
-# Conditionally install OpenTelemetry optional peer dependencies (Tier 3).
-# These are not bundled by default to keep the base image lean. Enable at build time
-# with: docker build --build-arg OTEL_ENABLED=true
-ARG OTEL_ENABLED=true
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    if [ "$OTEL_ENABLED" = "true" ]; then \
-      bun add --omit=dev --omit=peer --ignore-scripts @hono/otel \
-        @opentelemetry/instrumentation-http \
-        @opentelemetry/exporter-metrics-otlp-http \
-        @opentelemetry/exporter-trace-otlp-http \
-        @opentelemetry/instrumentation-pino \
-        @opentelemetry/resources \
-        @opentelemetry/sdk-metrics \
-        @opentelemetry/sdk-node \
-        @opentelemetry/sdk-trace-node \
-        @opentelemetry/semantic-conventions; \
-    fi
+# Keep the original manifest; the OTel install rewrites its deps-stage copy.
+COPY package.json ./
+COPY --from=deps /usr/src/app/node_modules ./node_modules
 
 # Copy the compiled application code from the build stage
 COPY --from=build /usr/src/app/dist ./dist
@@ -99,7 +117,6 @@ ENV MCP_TRANSPORT_TYPE="http"
 ENV MCP_SESSION_MODE="stateless"
 ENV MCP_LOG_LEVEL="info"
 ENV LOGS_DIR="/var/log/paleobiology-mcp-server"
-ENV MCP_FORCE_CONSOLE_LOGGING="true"
 
 # Expose the port the server listens on
 EXPOSE ${MCP_HTTP_PORT}
