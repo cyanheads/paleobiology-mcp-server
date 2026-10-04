@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.7](changelog/0.3.x/0.3.7.md) — 2026-10-03
+
+Preserves fractional ages, coordinates, and sparse fields in staged occurrences; adopts mcp-ts-core 0.13.11 and refreshes container and registry launch metadata.
+
 ## [0.3.6](changelog/0.3.x/0.3.6.md) — 2026-09-19
 
 Adopts @cyanheads/mcp-ts-core ^0.13.6 — declared stateless sessionMode, CanvasIdSchema-validated canvas_id inputs, and info-severity not-found errors.
