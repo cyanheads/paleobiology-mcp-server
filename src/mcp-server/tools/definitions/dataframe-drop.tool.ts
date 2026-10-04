@@ -1,8 +1,8 @@
 /**
  * @fileoverview paleobiology_dataframe_drop — drop a staged canvas table.
- * Frees memory before the canvas TTL expires. Opt-in: this definition is
- * registered only when PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true (off by default),
- * so it is absent from tools/list otherwise.
+ * Frees memory before the canvas TTL expires. Opt-in: this definition
+ * remains registered with disabledTool() while off. It is callable and listed
+ * in tools/list only when PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true.
  * @module mcp-server/tools/definitions/dataframe-drop.tool
  */
 
@@ -50,9 +50,7 @@ export const dataframeDropTool = tool('paleobiology_dataframe_drop', {
   async handler(input, ctx) {
     const canvas = getCanvas();
     if (!canvas) {
-      throw ctx.fail('canvas_disabled', 'DataCanvas is not enabled on this deployment.', {
-        ...ctx.recoveryFor('canvas_disabled'),
-      });
+      throw ctx.fail('canvas_disabled', 'DataCanvas is not enabled on this deployment.');
     }
     const instance = await canvas.acquire(input.canvas_id, ctx);
     const dropped = await instance.drop(input.table_name);

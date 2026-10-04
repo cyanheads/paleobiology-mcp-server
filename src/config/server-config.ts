@@ -32,7 +32,7 @@ const ServerConfigSchema = z.object({
   dataframeDropEnabled: z
     .stringbool()
     .default(false)
-    .describe('When true, registers paleobiology_dataframe_drop. Off by default.'),
+    .describe('When true, enables paleobiology_dataframe_drop. Off by default.'),
 });
 
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;

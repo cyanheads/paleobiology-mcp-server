@@ -64,9 +64,7 @@ export const dataframeDescribeTool = tool('paleobiology_dataframe_describe', {
   async handler(input, ctx) {
     const canvas = getCanvas();
     if (!canvas) {
-      throw ctx.fail('canvas_disabled', 'DataCanvas is not enabled on this deployment.', {
-        ...ctx.recoveryFor('canvas_disabled'),
-      });
+      throw ctx.fail('canvas_disabled', 'DataCanvas is not enabled on this deployment.');
     }
     const instance = await canvas.acquire(input.canvas_id, ctx);
     const tables = await instance.describe();

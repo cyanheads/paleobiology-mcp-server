@@ -60,9 +60,7 @@ export const dataframeQueryTool = tool('paleobiology_dataframe_query', {
   async handler(input, ctx) {
     const canvas = getCanvas();
     if (!canvas) {
-      throw ctx.fail('canvas_disabled', 'DataCanvas is not enabled on this deployment.', {
-        ...ctx.recoveryFor('canvas_disabled'),
-      });
+      throw ctx.fail('canvas_disabled', 'DataCanvas is not enabled on this deployment.');
     }
     const instance = await canvas.acquire(input.canvas_id, ctx);
     const result = await instance.query(input.sql, { signal: ctx.signal });

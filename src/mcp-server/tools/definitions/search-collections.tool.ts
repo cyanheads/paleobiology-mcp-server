@@ -245,7 +245,6 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
       throw ctx.fail(
         'missing_filter',
         'paleobiology_search_collections needs at least one filter (taxon, geologic time, place, formation, lithology, or environment) — PBDB rejects an unfiltered collection query.',
-        { ...ctx.recoveryFor('missing_filter') },
       );
     }
     if (input.base_name != null && input.base_id != null) {

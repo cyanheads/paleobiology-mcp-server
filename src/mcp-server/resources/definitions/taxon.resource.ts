@@ -45,9 +45,7 @@ export const taxonResource = resource('paleobiology://taxon/{taxon_no}', {
       taxon = await getPbdbService().getTaxon({ taxonNo, showChildren: false }, ctx);
     } catch (err) {
       if (isNotFoundError(err)) {
-        throw ctx.fail('taxon_not_found', `No taxon with taxon_no ${taxonNo}.`, {
-          ...ctx.recoveryFor('taxon_not_found'),
-        });
+        throw ctx.fail('taxon_not_found', `No taxon with taxon_no ${taxonNo}.`);
       }
       throw err;
     }

@@ -145,7 +145,6 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
       throw ctx.fail(
         'missing_filter',
         'paleobiology_get_diversity needs a clade to count — supply base_name or base_id.',
-        { ...ctx.recoveryFor('missing_filter') },
       );
     }
     if (input.base_name != null && input.base_id != null) {

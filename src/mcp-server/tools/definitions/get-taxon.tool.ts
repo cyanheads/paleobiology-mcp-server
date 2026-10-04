@@ -233,9 +233,7 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
 
   async handler(input, ctx) {
     if (!input.name && input.taxon_no == null) {
-      throw ctx.fail('missing_selector', 'Provide either a name or a taxon_no.', {
-        ...ctx.recoveryFor('missing_selector'),
-      });
+      throw ctx.fail('missing_selector', 'Provide either a name or a taxon_no.');
     }
 
     const args: TaxonLookup = { showChildren: input.show_children };
