@@ -1,6 +1,6 @@
 # paleobiology-mcp-server - Directory Structure
 
-Generated on: 2026-10-04 05:56:15
+Generated on: 2026-10-15 20:56:30
 
 ```text
 paleobiology-mcp-server/
@@ -27,6 +27,7 @@ paleobiology-mcp-server/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
+│   ├── 0.4.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -146,6 +147,7 @@ paleobiology-mcp-server/
 │   │   │   └── definitions/
 │   │   │       ├── index.ts
 │   │   │       ├── occurrence.resource.ts
+│   │   │       ├── reference.resource.ts
 │   │   │       └── taxon.resource.ts
 │   │   └── tools/
 │   │       ├── definitions/
@@ -153,11 +155,16 @@ paleobiology-mcp-server/
 │   │       │   ├── dataframe-drop.tool.ts
 │   │       │   ├── dataframe-query.tool.ts
 │   │       │   ├── get-diversity.tool.ts
+│   │       │   ├── get-references.tool.ts
 │   │       │   ├── get-taxon.tool.ts
 │   │       │   ├── index.ts
 │   │       │   ├── list-intervals.tool.ts
 │   │       │   ├── search-collections.tool.ts
 │   │       │   └── search-occurrences.tool.ts
+│   │       ├── blank-as-unset.ts
+│   │       ├── inline-budget.ts
+│   │       ├── one-line.ts
+│   │       ├── paging.ts
 │   │       └── pbdb-notices.ts
 │   ├── services/
 │   │   ├── intervals/
@@ -169,23 +176,33 @@ paleobiology-mcp-server/
 │   │   └── canvas-accessor.ts
 │   └── index.ts
 ├── tests/
+│   ├── fixtures/
+│   │   └── pbdb-refs-list.json
 │   ├── helpers/
-│   │   └── expect-error.ts
+│   │   ├── expect-error.ts
+│   │   ├── pbdb-refs.ts
+│   │   └── surface-bytes.ts
 │   ├── prompts/
 │   ├── resources/
-│   │   └── occurrence.resource.test.ts
+│   │   ├── occurrence.resource.test.ts
+│   │   └── reference.resource.test.ts
 │   ├── services/
 │   │   ├── interval-index.test.ts
 │   │   ├── pbdb-normalizers.test.ts
 │   │   └── pbdb-not-found.test.ts
 │   └── tools/
+│       ├── blank-as-unset.test.ts
 │       ├── dataframe.tool.test.ts
 │       ├── get-diversity.tool.test.ts
+│       ├── get-references.tool.test.ts
 │       ├── get-taxon.tool.test.ts
+│       ├── inline-budget.test.ts
 │       ├── list-intervals.tool.test.ts
 │       ├── occurrence-canvas.test.ts
+│       ├── one-line.test.ts
 │       ├── search-collections.tool.test.ts
-│       └── search-occurrences.tool.test.ts
+│       ├── search-occurrences.tool.test.ts
+│       └── tool-registration.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes
