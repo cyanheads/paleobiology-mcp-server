@@ -464,23 +464,78 @@ export interface DiversityResult {
   warnings?: string[];
 }
 
-/**
- * A streamed occurrence search: the row generator plus the upstream metadata
- * that has no channel out of it.
- *
- * `searchOccurrences` yields rows so the canvas `spillover()` helper can drain
- * them, but a generator's RETURN value is unreachable — `spillover()` reads
- * `next.done` and drops `next.value`, and a `for await` loop does the same. The
- * true match count and PBDB's warnings therefore ride on this handle, which the
- * caller holds across the drain.
- *
- * `meta` is filled in before the first row is yielded (the service awaits the
- * whole envelope, then yields), so it is populated once iteration has started —
- * read it after draining.
- */
+/** One page of an occurrence search plus the upstream metadata (true match count, warnings). */
 export interface OccurrenceSearch {
   meta: PbdbSearchMeta;
-  rows: AsyncGenerator<Occurrence>;
+  rows: Occurrence[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bibliographic references (`refs/list`)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One name in PBDB's `show=authorlist` split — either side may be missing, or both. */
+export interface PbdbReferenceName {
+  firstname?: string;
+  lastname?: string;
+}
+
+/**
+ * Raw `/refs/list` record (vocab=pbdb, show=both,authorlist). PBDB omits an
+ * absent field rather than sending it empty; `formatted` is its plain-text
+ * citation. `author`/`editors` are PBDB's own split of the author fields — one
+ * entry can be `{}` where the source data has an empty name.
+ */
+export interface PbdbReferenceRecord {
+  author?: PbdbReferenceName[];
+  doi?: string;
+  editors?: PbdbReferenceName[];
+  firstpage?: string;
+  formatted?: string;
+  language?: string;
+  lastpage?: string;
+  publication_type?: string;
+  publisher?: string;
+  pubno?: string;
+  pubtitle?: string;
+  pubvol?: string;
+  pubyr?: string;
+  reference_no?: string;
+  reftitle?: string;
+}
+
+/** A person named on a reference; nameless upstream entries are dropped. */
+export interface ReferenceName {
+  first_name?: string;
+  last_name?: string;
+}
+
+/**
+ * A bibliographic reference. `citation` is PBDB's formatted citation, verbatim;
+ * years and pages stay strings (`"viii"`, `"e0207935:1"`). Absent fields stay absent.
+ */
+export interface Reference {
+  authors?: ReferenceName[];
+  citation: string;
+  doi?: string;
+  editors?: ReferenceName[];
+  first_page?: string;
+  issue?: string;
+  language?: string;
+  last_page?: string;
+  publication?: string;
+  publication_type?: string;
+  publisher?: string;
+  reference_no: number;
+  title?: string;
+  volume?: string;
+  year?: string;
+}
+
+/** A batch reference lookup: the found references in request order, and the misses. */
+export interface ReferenceLookup {
+  not_found: number[];
+  references: Reference[];
 }
 
 /** The CC-BY attribution string surfaced as provenance on every data response. */

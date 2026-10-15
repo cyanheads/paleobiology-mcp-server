@@ -54,13 +54,13 @@ function codeForStatus(statusCode: number): JsonRpcErrorCode {
 
 /**
  * The McpError shape fetchWithTimeout throws on a non-2xx response — carrying the
- * raw upstream plumbing in `data` and the fetched URL in the message. The exact
- * leak surface this server must NOT forward to the client.
+ * raw upstream plumbing in `data` and the fetched URL (origin only, path redacted)
+ * in the message. The exact leak surface this server must NOT forward to the client.
  */
 function httpError(statusCode: number, body: string): McpError {
   return new McpError(
     codeForStatus(statusCode),
-    `Fetch failed for https://paleobiodb.org/data1.2/taxa/single. Status: ${statusCode}`,
+    `Fetch failed for https://paleobiodb.org/…. Status: ${statusCode}`,
     {
       requestId: 'req-internal-abc123',
       operation: 'fetchOp',
@@ -105,12 +105,12 @@ const LEAK_FIELDS = [
 ] as const;
 
 /** Assert a client-facing McpError carries none of the raw upstream plumbing. */
-function expectNoLeak(err: McpError, internalUrlFragment = 'paleobiodb.org/data1.2'): void {
+function expectNoLeak(err: McpError): void {
   for (const field of LEAK_FIELDS) {
     expect(err.data).not.toHaveProperty(field);
   }
   // The internal request URL must not survive into the client-facing message.
-  expect(err.message).not.toContain(internalUrlFragment);
+  expect(err.message).not.toContain('paleobiodb.org');
   expect(err.message).not.toContain('Fetch failed for');
 }
 
@@ -168,17 +168,9 @@ describe('PbdbService not-found reclassification', () => {
     );
     const ctx = createMockContext();
 
-    const err = (await (async () => {
-      try {
-        for await (const _ of service.searchOccurrences(
-          { limit: 100, offset: 0, lngmin: -130 },
-          ctx,
-        ).rows);
-        return;
-      } catch (e) {
-        return e as McpError;
-      }
-    })()) as McpError;
+    const err = (await service
+      .searchOccurrences({ limit: 100, offset: 0, lngmin: -130 }, ctx)
+      .catch((e) => e)) as McpError;
 
     expect(err).toBeInstanceOf(McpError);
     expect(isNotFoundError(err)).toBe(false);
@@ -212,6 +204,139 @@ describe('PbdbService not-found reclassification', () => {
     expect(isNotFoundError(err)).toBe(false);
   });
 
+  /** Drive one of the three list searches into a mocked rejection and return the error. */
+  async function rejectionFrom(
+    operation: 'searchOccurrences' | 'searchCollections' | 'getDiversity',
+  ): Promise<McpError> {
+    const ctx = createMockContext();
+    try {
+      if (operation === 'searchOccurrences') {
+        await service.searchOccurrences({ limit: 2, offset: 0 }, ctx);
+      } else if (operation === 'searchCollections') {
+        await service.searchCollections({ limit: 2, offset: 0 }, ctx);
+      } else {
+        await service.getDiversity(
+          { baseName: 'Dinosauria', count: 'genera', resolution: 'period' },
+          ctx,
+        );
+      }
+    } catch (e) {
+      return e as McpError;
+    }
+    throw new Error(`${operation} resolved; expected a rejection`);
+  }
+
+  it('keeps the warning that names the bad value ahead of the errors on a parameter 400 (#24)', async () => {
+    // A lone unknown lithology: PBDB's errors[] names only `all_records` (not a
+    // tool input); the warning is the part that says which value was wrong.
+    fetchWithTimeout.mockRejectedValue(
+      httpError(
+        400,
+        JSON.stringify({
+          errors: [
+            "You must specify 'all_records' if you want to retrieve the entire set of records.",
+          ],
+          warnings: [
+            "there are no records with lithology or lithology type 'unobtainium' in the database",
+          ],
+        }),
+      ),
+    );
+    const err = await rejectionFrom('searchCollections');
+
+    expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(err.message).toBe(
+      "PBDB rejected the searchCollections query: there are no records with lithology or lithology type 'unobtainium' in the database; You must specify 'all_records' if you want to retrieve the entire set of records.",
+    );
+    expect(err.data).toEqual({ operation: 'searchCollections', reason: 'pbdb_invalid_parameter' });
+    expectNoLeak(err);
+  });
+
+  it.each(['searchOccurrences', 'searchCollections', 'getDiversity'] as const)(
+    'names the unknown interval on a %s rejection (#24)',
+    async (operation) => {
+      fetchWithTimeout.mockRejectedValue(
+        httpError(
+          400,
+          JSON.stringify({
+            errors: ['No valid interval names were given.'],
+            warnings: ["Unknown interval 'Foobarian'"],
+          }),
+        ),
+      );
+      const err = await rejectionFrom(operation);
+
+      expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(err.message).toBe(
+        `PBDB rejected the ${operation} query: Unknown interval 'Foobarian'; No valid interval names were given.`,
+      );
+      expect(err.data).toEqual({ operation, reason: 'pbdb_invalid_parameter' });
+      expectNoLeak(err);
+    },
+  );
+
+  it('keeps the errors-only rejection text unchanged when PBDB sends no warnings', async () => {
+    fetchWithTimeout.mockRejectedValue(
+      httpError(400, JSON.stringify({ errors: ['No valid interval names were given.'] })),
+    );
+    const err = await rejectionFrom('searchOccurrences');
+
+    expect(err.message).toBe(
+      'PBDB rejected the searchOccurrences query: No valid interval names were given.',
+    );
+    expect(err.data).toEqual({ operation: 'searchOccurrences', reason: 'pbdb_invalid_parameter' });
+  });
+
+  it('reads the warnings off the 400 the real fetchWithTimeout raises, not only a hand-built one (#24)', async () => {
+    const actual = await vi.importActual<typeof import('@cyanheads/mcp-ts-core/utils')>(
+      '@cyanheads/mcp-ts-core/utils',
+    );
+    fetchWithTimeout.mockImplementation(actual.fetchWithTimeout);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json(
+          {
+            errors: ['No valid interval names were given.'],
+            warnings: ["Unknown interval 'Foobarian'"],
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+    try {
+      const err = await rejectionFrom('getDiversity');
+
+      expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(err.message).toBe(
+        "PBDB rejected the getDiversity query: Unknown interval 'Foobarian'; No valid interval names were given.",
+      );
+      expect(err.data).toEqual({ operation: 'getDiversity', reason: 'pbdb_invalid_parameter' });
+      expectNoLeak(err);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps the taxa/single 400 a not-found carrying only the errors text, warnings or not', async () => {
+    fetchWithTimeout.mockRejectedValue(
+      httpError(
+        400,
+        JSON.stringify({
+          errors: ["Invalid taxon name 'Bogus name foo bar'"],
+          warnings: ['an unrelated warning'],
+        }),
+      ),
+    );
+    const err = (await service
+      .getTaxon({ name: 'Bogus name foo bar', showChildren: false }, createMockContext())
+      .catch((e) => e)) as McpError;
+
+    expect(isNotFoundError(err)).toBe(true);
+    expect(err.message).toBe("Invalid taxon name 'Bogus name foo bar'");
+    expect(err.data).toEqual({ reason: 'pbdb_not_found' });
+  });
+
   it('marks a single-record lookup 404 as an expected status so it logs at debug', async () => {
     // A missing record is an ordinary outcome for taxa/single and occs/single —
     // the framework logs listed statuses at debug instead of error. List
@@ -228,10 +353,7 @@ describe('PbdbService not-found reclassification', () => {
 
     fetchWithTimeout.mockReset();
     fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
-    for await (const _ of service.searchOccurrences(
-      { limit: 10, offset: 0, baseName: 'Canis' },
-      ctx,
-    ).rows);
+    await service.searchOccurrences({ limit: 10, offset: 0, baseName: 'Canis' }, ctx);
     expect(fetchWithTimeout.mock.calls[0]?.[3]).toMatchObject({ expectedStatuses: [] });
   });
 
@@ -269,9 +391,7 @@ describe('PbdbService not-found reclassification', () => {
   it('returns an empty list (not an error) when a search yields no occurrences', async () => {
     fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
     const ctx = createMockContext();
-    const rows = [];
-    for await (const row of service.searchOccurrences({ limit: 100, offset: 0 }, ctx).rows)
-      rows.push(row);
+    const { rows } = await service.searchOccurrences({ limit: 100, offset: 0 }, ctx);
     expect(rows).toEqual([]);
   });
 
@@ -291,9 +411,7 @@ describe('PbdbService not-found reclassification', () => {
       }),
     );
     const ctx = createMockContext();
-    const rows = [];
-    for await (const row of service.searchOccurrences({ limit: 100, offset: 0 }, ctx).rows)
-      rows.push(row);
+    const { rows } = await service.searchOccurrences({ limit: 100, offset: 0 }, ctx);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ occurrence_no: 139292, accepted_name: 'Tyrannosaurus rex' });
     expect(rows[0]?.lng).toBeCloseTo(-113.0289);
@@ -302,10 +420,7 @@ describe('PbdbService not-found reclassification', () => {
   it('passes coll_id to PBDB when a collection_no filter is set (drilldown)', async () => {
     fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
     const ctx = createMockContext();
-    for await (const _ of service.searchOccurrences(
-      { limit: 50, offset: 0, collectionNo: 11917 },
-      ctx,
-    ).rows);
+    await service.searchOccurrences({ limit: 50, offset: 0, collectionNo: 11917 }, ctx);
     const url = fetchWithTimeout.mock.calls[0]?.[0] as URL;
     expect(url.searchParams.get('coll_id')).toBe('11917');
   });
@@ -384,10 +499,7 @@ describe('PbdbService not-found reclassification', () => {
   it('sends offset on the occurrence query (#14)', async () => {
     fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
     const ctx = createMockContext();
-    for await (const _ of service.searchOccurrences(
-      { limit: 50, offset: 150, baseName: 'Dinosauria' },
-      ctx,
-    ).rows);
+    await service.searchOccurrences({ limit: 50, offset: 150, baseName: 'Dinosauria' }, ctx);
     const url = fetchWithTimeout.mock.calls[0]?.[0] as URL;
     expect(url.searchParams.get('offset')).toBe('150');
     expect(url.searchParams.get('limit')).toBe('50');
@@ -399,8 +511,7 @@ describe('PbdbService not-found reclassification', () => {
     fetchWithTimeout.mockResolvedValue(okJson({ records: [] }));
     const ctx = createMockContext();
 
-    for await (const _ of service.searchOccurrences({ limit: 10, offset: 0, baseId: 38613 }, ctx)
-      .rows);
+    await service.searchOccurrences({ limit: 10, offset: 0, baseId: 38613 }, ctx);
     let url = fetchWithTimeout.mock.calls[0]?.[0] as URL;
     expect(url.pathname).toContain('occs/list');
     expect(url.searchParams.get('base_id')).toBe('txn:38613');
@@ -509,7 +620,7 @@ describe('PbdbService upstream-error sanitization (no leak on non-not-found fail
     const err = (await promise) as McpError;
 
     expect(err.code).toBe(JsonRpcErrorCode.Timeout);
-    expectNoLeak(err, 'paleobiodb.org');
+    expectNoLeak(err);
     expect(err.data).not.toHaveProperty('requestId');
   });
 
@@ -518,24 +629,15 @@ describe('PbdbService upstream-error sanitization (no leak on non-not-found fail
     fetchWithTimeout.mockRejectedValue(networkError());
     const ctx = createMockContext();
 
-    // searchOccurrences hands back a row generator — draining it triggers the fetch.
-    const drained = (async () => {
-      try {
-        for await (const _ of service.searchOccurrences(
-          { limit: 100, offset: 0, baseName: 'Dinosauria' },
-          ctx,
-        ).rows);
-        return;
-      } catch (e) {
-        return e as McpError;
-      }
-    })();
+    const promise = service
+      .searchOccurrences({ limit: 100, offset: 0, baseName: 'Dinosauria' }, ctx)
+      .catch((e) => e);
     await vi.runAllTimersAsync();
-    const err = (await drained) as McpError;
+    const err = (await promise) as McpError;
 
     expect(err).toBeInstanceOf(McpError);
     expect(err.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
-    expectNoLeak(err, 'paleobiodb.org');
+    expectNoLeak(err);
     expect(err.message).not.toContain('ECONNREFUSED');
     expect(err.data).not.toHaveProperty('originalErrorName');
   });
@@ -564,10 +666,7 @@ describe('PbdbService envelope metadata (warnings + rowcount totals)', () => {
 
     fetchWithTimeout.mockReset();
     fetchWithTimeout.mockResolvedValue(okJson({ records: [], records_found: 0 }));
-    for await (const _ of service.searchOccurrences(
-      { limit: 100, offset: 0, baseName: 'Dinosauria' },
-      ctx,
-    ).rows);
+    await service.searchOccurrences({ limit: 100, offset: 0, baseName: 'Dinosauria' }, ctx);
     const occUrl = fetchWithTimeout.mock.calls[0]?.[0] as URL | undefined;
     expect(occUrl?.searchParams.get('rowcount')).toBe('1');
   });
@@ -658,7 +757,7 @@ describe('PbdbService envelope metadata (warnings + rowcount totals)', () => {
     expect(pastEnd.total).toBe(84);
   });
 
-  it('exposes the occurrence total and warnings on the handle after the stream drains', async () => {
+  it('carries the occurrence total and warnings on the search result', async () => {
     fetchWithTimeout.mockResolvedValue(
       okJson({
         records: [{ occurrence_no: '1' }, { occurrence_no: '2' }],
@@ -667,14 +766,12 @@ describe('PbdbService envelope metadata (warnings + rowcount totals)', () => {
       }),
     );
     const ctx = createMockContext();
-    const search = service.searchOccurrences(
+    const search = await service.searchOccurrences(
       { limit: 2, offset: 0, baseName: 'Dinosauria', interval: 'Maastrichtian' },
       ctx,
     );
-    const rows = [];
-    for await (const row of search.rows) rows.push(row);
 
-    expect(rows).toHaveLength(2);
+    expect(search.rows).toHaveLength(2);
     expect(search.meta.recordsFound).toBe(4170);
     expect(search.meta.warnings).toBeUndefined();
   });
@@ -690,21 +787,19 @@ describe('PbdbService envelope metadata (warnings + rowcount totals)', () => {
       }),
     );
     const ctx = createMockContext();
-    const typo = service.searchOccurrences(
+    const typo = await service.searchOccurrences(
       { limit: 100, offset: 0, baseName: 'Tyrannosauruss' },
       ctx,
     );
-    for await (const _ of typo.rows);
     expect(typo.meta.warnings?.[0]).toMatch(/did not match the currently accepted variant/);
     expect(typo.meta.recordsFound).toBe(0);
 
     fetchWithTimeout.mockReset();
     fetchWithTimeout.mockResolvedValue(okJson({ records: [], records_found: 0 }));
-    const empty = service.searchOccurrences(
+    const empty = await service.searchOccurrences(
       { limit: 100, offset: 0, baseName: 'Tyrannosaurus', interval: 'Cambrian' },
       ctx,
     );
-    for await (const _ of empty.rows);
     expect(empty.meta.warnings).toBeUndefined();
     expect(empty.meta.recordsFound).toBe(0);
   });

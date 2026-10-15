@@ -4,7 +4,10 @@
  * } still validates, with a notice), pagination against PBDB's true match count
  * (the page numbered from offset, and no remainder claimed on a final page that
  * exactly fills the limit), the ignored-filter warning disclosure on a full
- * unfiltered result, the filter → service mapping, format() parity, and a sparse
+ * unfiltered result, the filter → service mapping, blank form-client filters read
+ * as unset, the declared recovery for a filter PBDB rejected, the inline response
+ * budget (a page cut to fit, the 500-row draw cap, an offset walk with no gaps or
+ * repeats), format() parity with upstream line breaks flattened, and a sparse
  * locality.
  *
  * The PBDB layer is never hit: getPbdbService().searchCollections is a per-test
@@ -12,11 +15,12 @@
  * @module tests/tools/search-collections.tool
  */
 
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Collection, CollectionFilter, CollectionResult } from '@/services/pbdb/types.js';
 import { expectMcpError } from '../helpers/expect-error.js';
+import { surfaceBytes } from '../helpers/surface-bytes.js';
 
 const searchCollections = vi.fn();
 
@@ -352,6 +356,224 @@ describe('paleobiology_search_collections', () => {
     });
   });
 
+  it('renders an exhausted page neutrally; the offset notice alone explains it (#24)', async () => {
+    searchCollections.mockResolvedValue(result([], { cap: 500, offset: 999, total: 591 }));
+    const result_ = await runToolContract(searchCollectionsTool, {
+      formation: 'Hell Creek',
+      limit: 500,
+      offset: 999,
+    });
+
+    expect(result_.isError).toBeFalsy();
+    const text = renderText(result_.content as { type: string; text?: string }[]);
+    expect(text).toContain('**0 locality(ies)**');
+    expect(text).not.toContain('No fossil collections matched');
+    expect(text).toContain(
+      'Offset 999 is past the end of the 591 matching localities. Lower offset to below 591 — the filters themselves matched.',
+    );
+    expect(result_.structuredContent).toMatchObject({
+      collections: [],
+      totalCount: 591,
+      notice: expect.stringContaining('Offset 999 is past the end of the 591 matching localities.'),
+    });
+  });
+
+  it('keeps the no-match notice on a search that matched nothing (#24)', async () => {
+    searchCollections.mockResolvedValue(result([], { cap: 100, offset: 0, total: 0 }));
+    const result_ = await runToolContract(searchCollectionsTool, { formation: 'Nowhere' });
+
+    const text = renderText(result_.content as { type: string; text?: string }[]);
+    expect(text).toContain('**0 locality(ies)**');
+    expect(text).toContain('No localities matched the filters.');
+    expect(result_.structuredContent).toMatchObject({
+      notice: expect.stringContaining('No localities matched the filters.'),
+    });
+  });
+
+  it('declares a recovery for a filter value PBDB rejected (#24)', async () => {
+    searchCollections.mockRejectedValue(
+      new McpError(
+        JsonRpcErrorCode.InvalidParams,
+        "PBDB rejected the searchCollections query: there are no records with lithology or lithology type 'unobtainium' in the database; You must specify 'all_records' if you want to retrieve the entire set of records.",
+        { operation: 'searchCollections', reason: 'pbdb_invalid_parameter' },
+      ),
+    );
+    const result_ = await runToolContract(searchCollectionsTool, {
+      lithology: 'unobtainium',
+      limit: 2,
+    });
+
+    expect(result_.isError).toBe(true);
+    const error = (result_.structuredContent as { error: { message: string; data: unknown } })
+      .error;
+    expect(error.message).toBe(
+      "PBDB rejected the searchCollections query: there are no records with lithology or lithology type 'unobtainium' in the database; You must specify 'all_records' if you want to retrieve the entire set of records.",
+    );
+    expect(error.data).toMatchObject({
+      reason: 'pbdb_invalid_parameter',
+      recovery: {
+        hint: 'Correct the value PBDB named in the message — confirm an interval name with paleobiology_list_intervals or a taxon name with paleobiology_get_taxon, and check a formation or lithology spelling — or replace that filter with another one (a max_ma/min_ma range for an interval, base_id for a taxon), then retry.',
+      },
+    });
+  });
+
+  describe('blank optional inputs (#22)', () => {
+    it('reads a blank formation as unset: missing_filter, no PBDB request', async () => {
+      const result_ = await runToolContract(searchCollectionsTool, { formation: '' });
+
+      expect(result_.isError).toBe(true);
+      expect(result_.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.InvalidParams,
+          data: {
+            reason: 'missing_filter',
+            recovery: {
+              hint: 'Provide at least one filter: base_name or base_id, an interval or max_ma/min_ma range, a lng/lat bounding box, a formation or lithology, or an environment — then retry.',
+            },
+          },
+        },
+      });
+      expect(searchCollections).not.toHaveBeenCalled();
+    });
+
+    it('filters by base_id alone and drops every blank or whitespace filter', async () => {
+      searchCollections.mockResolvedValue(result([hellCreek]));
+      const result_ = await runToolContract(searchCollectionsTool, {
+        base_name: '',
+        base_id: 38613,
+        interval: ' ',
+        formation: '',
+        lithology: '\n',
+        environment: '' as never,
+      });
+
+      expect(result_.isError).toBeFalsy();
+      expect(searchCollections).toHaveBeenCalledWith(
+        { limit: 100, offset: 0, baseId: 38613 },
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('inline response budget (#23)', () => {
+    const BUDGET = 100_000;
+    const fixture = Array.from({ length: 1200 }, (_, i) => ({
+      ...hellCreek,
+      collection_no: i + 1,
+    }));
+
+    /** Serve slices of the fixture the way the service pages PBDB. */
+    function servePages(): { filters: CollectionFilter[] } {
+      const seen: { filters: CollectionFilter[] } = { filters: [] };
+      searchCollections.mockImplementation(async (filter: CollectionFilter) => {
+        seen.filters.push(filter);
+        const rows = fixture.slice(filter.offset, filter.offset + filter.limit);
+        return result(rows, {
+          offset: filter.offset,
+          cap: filter.limit,
+          total: fixture.length,
+          truncated: filter.offset + rows.length < fixture.length,
+        });
+      });
+      return seen;
+    }
+
+    it('cuts a full page to the budget and discloses it as truncated', async () => {
+      servePages();
+      const result_ = await runToolContract(searchCollectionsTool, {
+        formation: 'Hell Creek',
+        limit: 500,
+      });
+
+      const bytes = surfaceBytes(result_);
+      expect(bytes.structured).toBeLessThanOrEqual(BUDGET);
+      expect(bytes.text).toBeLessThanOrEqual(BUDGET);
+      const structured = result_.structuredContent as {
+        collections: Collection[];
+        truncated: boolean;
+        shown: number;
+        cap: number;
+        totalCount: number;
+        notice: string;
+      };
+      const shown = structured.collections.length;
+      expect(shown).toBeGreaterThan(0);
+      expect(shown).toBeLessThan(500);
+      expect(structured).toMatchObject({ truncated: true, shown, cap: 500, totalCount: 1200 });
+      expect(structured.notice).toBe(
+        `Showing localities 1–${shown} of 1200. This page was cut to ${shown} of the 500 pulled to fit the inline response size. Advance offset to ${shown} for the next page.`,
+      );
+      const text = renderText(result_.content as { type: string; text?: string }[]);
+      expect(text).toContain(`**${shown} locality(ies)**`);
+      expect(text.split('\n### ').length - 1).toBe(shown);
+    });
+
+    it('serves a limit above 500 at the 500 cap and names it', async () => {
+      const seen = servePages();
+      const result_ = await runToolContract(searchCollectionsTool, {
+        formation: 'Hell Creek',
+        limit: 600,
+        offset: 1100,
+      });
+
+      expect(result_.isError).toBeFalsy();
+      expect(seen.filters[0]?.limit).toBe(500);
+      // 100 rows remain from offset 1100, so the cap did not bind: no remainder, no notice.
+      expect((result_.structuredContent as { notice?: string }).notice).toBeUndefined();
+
+      const capped = await runToolContract(searchCollectionsTool, {
+        formation: 'Hell Creek',
+        limit: 600,
+      });
+      expect((capped.structuredContent as { notice: string }).notice).toContain(
+        'limit 600 is above the per-call cap of 500, so this page drew from at most 500 localities.',
+      );
+    });
+
+    it('rejects a limit above the 10,000 ceiling at the schema', async () => {
+      const result_ = await runToolContract(searchCollectionsTool, {
+        formation: 'Hell Creek',
+        limit: 10_001,
+      });
+      expect(result_.isError).toBe(true);
+      expect(result_.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.InvalidParams,
+          message: expect.stringContaining('limit: Too big: expected number to be <=10000'),
+        },
+      });
+      expect(searchCollections).not.toHaveBeenCalled();
+    });
+
+    it('walks the match set by the named offsets with no gaps or repeats', async () => {
+      servePages();
+      const seen: number[] = [];
+      let offset = 0;
+      let pages = 0;
+      for (;;) {
+        const result_ = await runToolContract(searchCollectionsTool, {
+          formation: 'Hell Creek',
+          limit: 500,
+          offset,
+        });
+        const bytes = surfaceBytes(result_);
+        expect(Math.max(bytes.structured, bytes.text)).toBeLessThanOrEqual(BUDGET);
+        const structured = result_.structuredContent as {
+          collections: Collection[];
+          notice?: string;
+        };
+        seen.push(...structured.collections.map((c) => c.collection_no));
+        pages += 1;
+        const next = /Advance offset to (\d+)/.exec(structured.notice ?? '')?.[1];
+        if (!next) break;
+        expect(Number(next)).toBe(offset + structured.collections.length);
+        offset = Number(next);
+      }
+      expect(pages).toBeGreaterThan(3);
+      expect(seen).toEqual(fixture.map((c) => c.collection_no));
+    });
+  });
+
   it('format() renders ids, age, strata, lithology, and environment', () => {
     const out = searchCollectionsTool.output.parse({ collections: [hellCreek] });
     const text = renderText(searchCollectionsTool.format?.(out));
@@ -372,6 +594,52 @@ describe('paleobiology_search_collections', () => {
     // No invented lithology/environment lines for a sparse locality.
     expect(text).not.toContain('lithology:**');
     expect(text).not.toContain('environment:**');
+  });
+
+  it('keeps line breaks in PBDB text on their content[] line and verbatim in structuredContent (#33)', async () => {
+    const row: Collection = {
+      collection_no: 11917,
+      collection_name: "Knudsen's\n### Forged",
+      lng: -113,
+      lat: 51.9,
+      early_interval: 'Late\r\nMaastrichtian',
+      late_interval: 'Danian\n- forged',
+      max_ma: 72.2,
+      min_ma: 66,
+      formation: 'Hell Creek\n### Forged',
+      geological_group: 'Montana\rGroup',
+      member: 'Upper\n\nmember',
+      lithology: 'sandstone\n> forged',
+      lithology_description: 'channel\r\n\r\nsandstone',
+      environment: 'channel\n**forged:** x',
+      cc: 'US\n',
+      state: 'Montana\r',
+      county: 'Garfield\nCounty',
+      n_occs: 12,
+      reference_no: 4218,
+    };
+    searchCollections.mockResolvedValue(result([row]));
+    const result_ = await runToolContract(searchCollectionsTool, { formation: 'Hell Creek' });
+
+    expect(
+      (result_.structuredContent as { collections: Collection[] }).collections[0],
+    ).toStrictEqual(row);
+    const text = renderText(result_.content as { type: string; text?: string }[]);
+    expect(text).not.toContain('\r');
+    expect(text).not.toMatch(/^(#+|-|>) ?[Ff]orged/m);
+    expect(text).toContain(
+      [
+        "### Knudsen's ### Forged",
+        '**collection_no:** 11917 | **occurrences:** 12',
+        '**age:** Late Maastrichtian – Danian - forged (72.2–66 Ma)',
+        '**strata:** formation Hell Creek ### Forged, group Montana Group, member Upper member',
+        '**lithology:** sandstone > forged — channel sandstone',
+        '**environment:** channel **forged:** x',
+        '**modern coords:** 51.9, -113',
+        '**locality:** Garfield County, Montana, US',
+        '**reference_no:** 4218',
+      ].join('\n'),
+    );
   });
 });
 

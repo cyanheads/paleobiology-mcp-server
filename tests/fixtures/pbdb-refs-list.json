@@ -1,0 +1,347 @@
+{
+  "elapsed_time": 0.00103,
+  "records": [
+    {
+      "reference_no": "962",
+      "record_type": "ref",
+      "publication_type": "book/book chapter",
+      "reftitle": "Mammal evolution near the Cretaceous-Tertiary Boundary",
+      "pubyr": "1984",
+      "author": [
+        {
+          "firstname": "J. D.",
+          "lastname": "Archibald"
+        },
+        {
+          "firstname": "W. A.",
+          "lastname": "Clemens"
+        }
+      ],
+      "editors": [
+        {
+          "firstname": "W. A.",
+          "lastname": "Berggren"
+        },
+        {
+          "lastname": "Van Couvering",
+          "firstname": "J. A."
+        }
+      ],
+      "pubtitle": "Catastrophes and Earth History: The New Uniformitarianism",
+      "publisher": "Princeton University Press",
+      "pubcity": "Princeton",
+      "firstpage": "339",
+      "lastpage": "372",
+      "language": "English",
+      "doi": "10.1515/9781400853281.339",
+      "ref_type": "ref",
+      "formatted": "J. D. Archibald and W. A. Clemens. 1984. Mammal evolution near the Cretaceous-Tertiary Boundary.  In W. A. Berggren, J. A. Van Couvering (eds.), Catastrophes and Earth History: The New Uniformitarianism. Princeton: Princeton University Press."
+    },
+    {
+      "reference_no": "19309",
+      "record_type": "ref",
+      "publication_type": "book/book chapter",
+      "reftitle": "Dracorex hogwartsia, n. gen., n. sp., a spiked, flat-headed pachycephalosaurid dinosaur from the Upper Cretaceous Hell Creek Formation of South Dakota",
+      "pubyr": "2006",
+      "author": [
+        {
+          "firstname": "R. T.",
+          "lastname": "Bakker"
+        },
+        {
+          "firstname": "R. M.",
+          "lastname": "Sullivan"
+        },
+        {
+          "firstname": "V.",
+          "lastname": "Porter"
+        },
+        {
+          "firstname": "P.",
+          "lastname": "Larson"
+        },
+        {
+          "firstname": "S. J.",
+          "lastname": "Saulsbury"
+        }
+      ],
+      "editors": [
+        {
+          "firstname": "S. G.",
+          "lastname": "Lucas"
+        },
+        {
+          "firstname": "R. M.",
+          "lastname": "Sullivan"
+        }
+      ],
+      "pubtitle": "Late Cretaceous Vertebrates from the Western Interior. New Mexico Museum of Natural History and Science Bulletin",
+      "pubvol": "35",
+      "firstpage": "331",
+      "lastpage": "345",
+      "language": "English",
+      "ref_type": "ref",
+      "formatted": "R. T. Bakker, R. M. Sullivan, and V. Porter, P. Larson, S. J. Saulsbury. 2006. Dracorex hogwartsia, n. gen., n. sp., a spiked, flat-headed pachycephalosaurid dinosaur from the Upper Cretaceous Hell Creek Formation of South Dakota.  In S. G. Lucas and R. M. Sullivan (eds.), Late Cretaceous Vertebrates from the Western Interior. New Mexico Museum of Natural History and Science Bulletin 35:331-345"
+    },
+    {
+      "reference_no": "5227",
+      "record_type": "ref",
+      "reftitle": "Report on Test Excavations in a Prehistoric Pigment Mine near Postmasburg, North Cape",
+      "pubyr": "1974",
+      "author": [
+        {
+          "firstname": "P. B.",
+          "lastname": "Beaumont"
+        },
+        {
+          "firstname": "A. K.",
+          "lastname": "Boshier"
+        }
+      ],
+      "pubtitle": "South African Archaeological Bulletin",
+      "pubvol": "29",
+      "firstpage": "41",
+      "lastpage": "59",
+      "doi": "10.2307/3887938",
+      "ref_type": "ref",
+      "formatted": "P. B. Beaumont and A. K. Boshier. 1974. Report on Test Excavations in a Prehistoric Pigment Mine near Postmasburg, North Cape. South African Archaeological Bulletin 29:41-59"
+    },
+    {
+      "reference_no": "5923",
+      "record_type": "ref",
+      "publication_type": "unpublished",
+      "pubyr": "1994",
+      "author": [
+        {
+          "firstname": "A. K.",
+          "lastname": "Behrensmeyer"
+        }
+      ],
+      "language": "English",
+      "ref_type": "ref",
+      "formatted": "A. K. Behrensmeyer. 1994."
+    },
+    {
+      "reference_no": "149",
+      "record_type": "ref",
+      "publication_type": "journal article",
+      "reftitle": "Fossils from the Bracklesham Group exposed in the M27 Motorway excavations, Southampton, Hampshire",
+      "pubyr": "1991",
+      "author": [
+        {
+          "firstname": "D. A.",
+          "lastname": "Bone"
+        },
+        {
+          "firstname": "J. A.",
+          "lastname": "Todd"
+        },
+        {
+          "firstname": "S.",
+          "lastname": "Tracey"
+        }
+      ],
+      "pubtitle": "Tertiary Research",
+      "pubvol": "12",
+      "pubno": "3-4",
+      "firstpage": "131",
+      "lastpage": "137",
+      "language": "English",
+      "ref_type": "ref",
+      "formatted": "D. A. Bone, J. A. Todd, and S. Tracey. 1991. Fossils from the Bracklesham Group exposed in the M27 Motorway excavations, Southampton, Hampshire. Tertiary Research 12(3-4):131-137"
+    },
+    {
+      "reference_no": "4398",
+      "record_type": "ref",
+      "publication_type": "journal article",
+      "reftitle": "The crocodilian Bernissartia in the Wealden of the Isle of Wight\r\n",
+      "pubyr": "1979",
+      "author": [
+        {
+          "firstname": "E.",
+          "lastname": "Buffetaut"
+        },
+        {
+          "firstname": "R. L. E.",
+          "lastname": "Ford"
+        }
+      ],
+      "pubtitle": "Palaeontology",
+      "pubvol": "22",
+      "pubno": "4",
+      "firstpage": "905",
+      "lastpage": "912",
+      "language": "English",
+      "ref_type": "ref",
+      "formatted": "E. Buffetaut and R. L. E. Ford. 1979. The crocodilian Bernissartia in the Wealden of the Isle of Wight\r\n. Palaeontology 22(4):905-912"
+    },
+    {
+      "reference_no": "4218",
+      "record_type": "ref",
+      "publication_type": "guidebook",
+      "reftitle": "Alberta's dinosaurs and other fossil vertebrates: Judith River and Edmonton groups (Campanian-Maastrichtian)",
+      "pubyr": "2001",
+      "author": [
+        {
+          "firstname": "D. A.",
+          "lastname": "Eberth"
+        },
+        {
+          "firstname": "P. J.",
+          "lastname": "Currie"
+        },
+        {
+          "firstname": "D. B.",
+          "lastname": "Brinkman"
+        },
+        {
+          "firstname": "M. J.",
+          "lastname": "Ryan"
+        },
+        {
+          "firstname": "D. R.",
+          "lastname": "Braman"
+        },
+        {
+          "firstname": "J. D.",
+          "lastname": "Gardner"
+        },
+        {
+          "firstname": "V. D.",
+          "lastname": "Lam"
+        },
+        {
+          "firstname": "D. N.",
+          "lastname": "Spivak"
+        },
+        {
+          "firstname": "A. G.",
+          "lastname": "Neuman"
+        }
+      ],
+      "pubtitle": "In C. L. Hill (ed), Society of Vertebrate Paleontology, 61st Annual Meeting, Bozeman. Guidebook for the Field Trips: Mesozoic and Cenozoic Paleontology in the Western Plains and Rocky Mountains, Museum of the Rockies Occasional Paper",
+      "pubvol": "3",
+      "firstpage": "49",
+      "lastpage": "75",
+      "language": "English",
+      "ref_type": "ref",
+      "formatted": "D. A. Eberth, P. J. Currie, and D. B. Brinkman, M. J. Ryan, D. R. Braman, J. D. Gardner, V. D. Lam, D. N. Spivak, A. G. Neuman. 2001. Alberta's dinosaurs and other fossil vertebrates: Judith River and Edmonton groups (Campanian-Maastrichtian). In C. L. Hill (ed), Society of Vertebrate Paleontology, 61st Annual Meeting, Bozeman. Guidebook for the Field Trips: Mesozoic and Cenozoic Paleontology in the Western Plains and Rocky Mountains, Museum of the Rockies Occasional Paper 3:49-75"
+    },
+    {
+      "reference_no": "51520",
+      "record_type": "ref",
+      "publication_type": "book",
+      "pubyr": "1993",
+      "author": [
+        {
+          "firstname": "J. R.",
+          "lastname": "Horner"
+        },
+        {
+          "firstname": "D.",
+          "lastname": "Lessem"
+        }
+      ],
+      "pubtitle": "The Complete T. rex",
+      "publisher": "Simon & Schuster",
+      "pubcity": "New York",
+      "firstpage": "1",
+      "lastpage": "239",
+      "language": "English",
+      "doi": "10.1093/nq/40-4-560",
+      "ref_type": "ref",
+      "formatted": "J. R. Horner and D. Lessem. 1993. The Complete T. rex. New York: Simon & Schuster."
+    },
+    {
+      "reference_no": "56724",
+      "record_type": "ref",
+      "publication_type": "journal article",
+      "reftitle": "A human deciduous tooth and new 40Ar/39Ar dating results from the Middle Pleistocene archaeological site of Isernia La Pineta, Southern Italy",
+      "pubyr": "2015",
+      "author": [
+        {
+          "firstname": "C.",
+          "lastname": "Peretto"
+        },
+        {
+          "firstname": "J.",
+          "lastname": "Arnaud"
+        },
+        {
+          "firstname": "J.",
+          "lastname": "Moggi-Cecchi"
+        },
+        {
+          "firstname": "G.",
+          "lastname": "Manzi"
+        },
+        {
+          "firstname": "S.",
+          "lastname": "Nomade"
+        },
+        {},
+        {
+          "firstname": "A.",
+          "lastname": "Pereira"
+        },
+        {
+          "firstname": "C.",
+          "lastname": "Falguères"
+        },
+        {
+          "firstname": "J.",
+          "lastname": "Bahain"
+        },
+        {
+          "firstname": "D.",
+          "lastname": "Grimaud-Hervé"
+        },
+        {
+          "firstname": "C.",
+          "lastname": "Berto"
+        },
+        {
+          "firstname": "B.",
+          "lastname": "Sala"
+        },
+        {
+          "firstname": "G.",
+          "lastname": "Lembo"
+        },
+        {
+          "firstname": "B.",
+          "lastname": "Mutilo"
+        },
+        {
+          "firstname": "B.",
+          "lastname": "Gallotti"
+        },
+        {
+          "firstname": "U.",
+          "lastname": "Thun Hohenstein"
+        },
+        {
+          "firstname": "C.",
+          "lastname": "Vaccaro"
+        },
+        {
+          "firstname": "M.",
+          "lastname": "Coltorti"
+        },
+        {
+          "firstname": "M.",
+          "lastname": "Arzarello"
+        }
+      ],
+      "pubtitle": "Plos One",
+      "pubvol": "10",
+      "pubno": "10",
+      "firstpage": "1",
+      "lastpage": "19",
+      "language": "English",
+      "doi": "10.1371",
+      "ref_type": "ref",
+      "formatted": "C. Peretto, J. Arnaud, and J. Moggi-Cecchi, G. Manzi, S. Nomade,, A. Pereira, C. Falguères, J. Bahain, D. Grimaud-Hervé, C. Berto, B. Sala, G. Lembo, B. Mutilo, B. Gallotti, U. Thun Hohenstein, C. Vaccaro, M. Coltorti, M. Arzarello. 2015. A human deciduous tooth and new 40Ar/39Ar dating results from the Middle Pleistocene archaeological site of Isernia La Pineta, Southern Italy. Plos One 10(10):1-19"
+    }
+  ]
+}

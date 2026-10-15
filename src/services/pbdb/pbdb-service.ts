@@ -22,8 +22,11 @@
  *    are caught in {@link parseEnvelope}. All surface as the caller's typed
  *    not-found. Every other endpoint reserves HTTP 400 + `errors[]` for a
  *    malformed PARAMETER, which surfaces as `InvalidParams` carrying PBDB's own
- *    rejection text. Every other upstream failure (403/429/5xx/timeout/network)
- *    is also routed through {@link sanitizeUpstreamError}, which strips the raw
+ *    rejection text, `warnings[]` first: an unknown interval or lithology value
+ *    is named only in the warning, and the error alone can point at a parameter
+ *    the tools never expose (`all_records`). Every other upstream failure
+ *    (403/429/5xx/timeout/network) is also routed through
+ *    {@link sanitizeUpstreamError}, which strips the raw
  *    upstream plumbing (statusCode/responseBody/requestId/URL) the framework
  *    would otherwise forward to the client, re-minting a same-code error with
  *    leak-free `data`.
@@ -80,10 +83,15 @@ import type {
   PbdbEnvelope,
   PbdbIntervalRecord,
   PbdbOccurrenceRecord,
+  PbdbReferenceName,
+  PbdbReferenceRecord,
   PbdbResponse,
   PbdbSearchMeta,
   PbdbTaxonRecord,
   PbdbTimescaleRecord,
+  Reference,
+  ReferenceLookup,
+  ReferenceName,
   Taxon,
   TaxonClassification,
   TaxonLookup,
@@ -275,16 +283,10 @@ export class PbdbService {
   // ── Occurrences ─────────────────────────────────────────────────────────────
 
   /**
-   * Search fossil occurrences. Returns a {@link OccurrenceSearch} handle: an async
-   * generator the spillover helper streams rows from, plus the `meta` object the
-   * generator fills in from the upstream envelope before yielding its first row.
-   *
-   * The handle exists because neither drain path can see a generator's return
-   * value — `spillover()` discards `next.value` once `next.done` is set, and a
-   * `for await` loop does the same — so the true match count and PBDB's warnings
-   * need a channel the caller still holds after the stream is exhausted.
+   * Search fossil occurrences. Returns the normalized page of rows plus the
+   * envelope `meta` (true match count, PBDB's warnings).
    */
-  searchOccurrences(filter: OccurrenceFilter, ctx: Context): OccurrenceSearch {
+  async searchOccurrences(filter: OccurrenceFilter, ctx: Context): Promise<OccurrenceSearch> {
     const cap = Math.min(filter.limit, getServerConfig().pbdbMaxOccurrences);
     const params: Record<string, string | number | undefined> = {
       show: SHOW_BLOCKS.occurrences,
@@ -307,19 +309,13 @@ export class PbdbService {
       latmax: filter.latmax,
       envtype: filter.environment ? envtypeFor(filter.environment) : undefined,
     };
-    const meta: PbdbSearchMeta = {};
-    const self = this;
-    async function* rows(): AsyncGenerator<Occurrence> {
-      const response = await self.get<PbdbOccurrenceRecord>(
-        'occs/list',
-        params,
-        ctx,
-        'searchOccurrences',
-      );
-      Object.assign(meta, response.meta);
-      for (const r of response.records) yield normalizeOccurrence(r);
-    }
-    return { rows: rows(), meta };
+    const { records, meta } = await this.get<PbdbOccurrenceRecord>(
+      'occs/list',
+      params,
+      ctx,
+      'searchOccurrences',
+    );
+    return { rows: records.map(normalizeOccurrence), meta };
   }
 
   /** Fetch one occurrence by its integer id. */
@@ -528,6 +524,31 @@ export class PbdbService {
     this.scaleNames = names;
     return names;
   }
+
+  // ── References ───────────────────────────────────────────────────────────────
+
+  /**
+   * Resolve bibliographic references by id in ONE `refs/list` request. That
+   * endpoint answers a miss by omitting it (HTTP 200, no `errors[]`) and returns
+   * hits in its own author order, so the result is rebuilt from the request:
+   * hits in `referenceNos` order, misses in `not_found`. Callers pass distinct ids.
+   */
+  async getReferences(referenceNos: number[], ctx: Context): Promise<ReferenceLookup> {
+    const { records } = await this.get<PbdbReferenceRecord>(
+      'refs/list',
+      { ref_id: referenceNos.join(','), show: 'both,authorlist' },
+      ctx,
+      'getReferences',
+    );
+    const byNo = new Map(records.map((r) => [intId(r.reference_no), r]));
+    const lookup: ReferenceLookup = { references: [], not_found: [] };
+    for (const no of referenceNos) {
+      const rec = byNo.get(no);
+      if (rec) lookup.references.push(normalizeReference(rec));
+      else lookup.not_found.push(no);
+    }
+    return lookup;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -731,14 +752,59 @@ export function normalizeCollection(r: PbdbCollectionRecord): Collection {
   return c;
 }
 
-/** Strip surrounding double-quotes PBDB sometimes wraps free-text fields in. */
+/**
+ * Normalize a raw `refs/list` record to a {@link Reference}. Text is relayed
+ * verbatim (PBDB's citation is plain text; CR/LF and `&` included) and years and
+ * pages stay strings. A record without its id or formatted citation is unusable —
+ * the citation is the point of the lookup — so it fails loud.
+ */
+export function normalizeReference(r: PbdbReferenceRecord): Reference {
+  const referenceNo = intId(r.reference_no);
+  if (referenceNo == null || !r.formatted) {
+    throw serviceUnavailable('PBDB returned a reference without its id or formatted citation.');
+  }
+  const ref: Reference = { reference_no: referenceNo, citation: r.formatted };
+  if (r.publication_type) ref.publication_type = r.publication_type;
+  if (r.reftitle) ref.title = r.reftitle;
+  if (r.pubyr) ref.year = r.pubyr;
+  const authors = referenceNames(r.author);
+  if (authors) ref.authors = authors;
+  const editors = referenceNames(r.editors);
+  if (editors) ref.editors = editors;
+  if (r.pubtitle) ref.publication = r.pubtitle;
+  if (r.pubvol) ref.volume = r.pubvol;
+  if (r.pubno) ref.issue = r.pubno;
+  if (r.firstpage) ref.first_page = r.firstpage;
+  if (r.lastpage) ref.last_page = r.lastpage;
+  if (r.publisher) ref.publisher = r.publisher;
+  if (r.language) ref.language = r.language;
+  if (r.doi) ref.doi = r.doi;
+  return ref;
+}
+
+/** Map PBDB's authorlist entries to names, dropping nameless ones; `undefined` when none remain. */
+function referenceNames(list: PbdbReferenceName[] | undefined): ReferenceName[] | undefined {
+  if (!Array.isArray(list)) return;
+  const names: ReferenceName[] = [];
+  for (const { firstname, lastname } of list) {
+    const name: ReferenceName = {};
+    if (firstname) name.first_name = firstname;
+    if (lastname) name.last_name = lastname;
+    if (firstname || lastname) names.push(name);
+  }
+  return names.length > 0 ? names : undefined;
+}
+
+/**
+ * Strip the double quotes PBDB sometimes wraps a whole free-text field in. A
+ * value with interior quotes (`"a" (Author 1979) "b"`) is not wrapped, so it is
+ * kept as written.
+ */
 function unquote(s: string | undefined): string | undefined {
   if (!s) return;
-  const trimmed = s
-    .trim()
-    .replace(/^"+|"+$/g, '')
-    .trim();
-  return trimmed || undefined;
+  const trimmed = s.trim();
+  const inner = /^"+([^"]*)"+$/.exec(trimmed)?.[1];
+  return (inner ?? trimmed).trim() || undefined;
 }
 
 /** Human-facing label for a sanitized upstream failure, keyed by error code. */
@@ -778,9 +844,11 @@ const OPERATIONS_WITH_NOT_FOUND_400 = new Set(['getTaxon']);
  *    (statusCode/statusText/responseBody/requestId) is dropped, replaced by
  *    `{ reason: 'pbdb_not_found' }`.
  *  - PBDB parameter rejection anywhere else: an `InvalidParams` McpError carrying
- *    PBDB's own rejection text, so a malformed filter reads as a bad parameter
- *    instead of "no match" or "upstream unavailable". The tool boundary guards
- *    should make this unreachable; it is the honest fallback if one is missed.
+ *    PBDB's own rejection text — its `warnings[]` (which name the value it could
+ *    not use) ahead of its `errors[]` — so a malformed filter reads as a bad
+ *    parameter instead of "no match" or "upstream unavailable". The tool boundary
+ *    guards catch the structural mistakes; an unknown interval or lithology value
+ *    still reaches PBDB and lands here.
  *  - Anything else (403/429/5xx/timeout/network): a freshly-minted McpError of the
  *    SAME code (so withRetry's transient classification is preserved) with a
  *    generic, operation-scoped message and leak-free `data` (`{ operation }` only —
@@ -801,9 +869,13 @@ function sanitizeUpstreamError(err: unknown, operation: string): unknown {
     if (OPERATIONS_WITH_NOT_FOUND_400.has(operation)) {
       return notFound(pbdbNotFoundMessage(err, operation), { reason: 'pbdb_not_found' });
     }
+    // The warnings lead: on a rejection they are what names the bad value
+    // ("Unknown interval 'Foobarian'"), while errors[] can name only a
+    // consequence of it ("You must specify 'all_records'…").
+    const reasons = [...pbdbBodyStrings(err, 'warnings'), ...pbdbBodyStrings(err, 'errors')];
     return new McpError(
       JsonRpcErrorCode.InvalidParams,
-      `PBDB rejected the ${operation} query: ${pbdbErrorStrings(err).join('; ')}`,
+      `PBDB rejected the ${operation} query: ${reasons.join('; ')}`,
       { operation, reason: 'pbdb_invalid_parameter' },
       { cause: err },
     );
@@ -831,24 +903,25 @@ function isPbdbParameterRejection(err: McpError): boolean {
   ) {
     return false;
   }
-  return pbdbErrorStrings(err).length > 0;
+  return pbdbBodyStrings(err, 'errors').length > 0;
 }
 
 /** The not-found message: PBDB's own error text when present, else a generic one. */
 function pbdbNotFoundMessage(err: McpError, operation: string): string {
-  const errors = pbdbErrorStrings(err);
+  const errors = pbdbBodyStrings(err, 'errors');
   return errors.length > 0 ? errors.join('; ') : `PBDB found no match during ${operation}.`;
 }
 
-/** Extract PBDB's `errors[]` strings from a captured `data.responseBody`, or `[]`. */
-function pbdbErrorStrings(err: McpError): string[] {
+/**
+ * Extract PBDB's `errors[]` or `warnings[]` strings from a captured
+ * `data.responseBody`, or `[]`.
+ */
+function pbdbBodyStrings(err: McpError, key: 'errors' | 'warnings'): string[] {
   const responseBody = (err.data as { responseBody?: unknown } | undefined)?.responseBody;
   if (typeof responseBody !== 'string') return [];
   try {
-    const parsed = JSON.parse(responseBody) as { errors?: unknown };
-    return Array.isArray(parsed.errors)
-      ? parsed.errors.filter((e): e is string => typeof e === 'string')
-      : [];
+    const list = (JSON.parse(responseBody) as Record<string, unknown>)[key];
+    return Array.isArray(list) ? list.filter((e): e is string => typeof e === 'string') : [];
   } catch {
     return [];
   }

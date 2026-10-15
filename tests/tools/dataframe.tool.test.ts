@@ -1,7 +1,8 @@
 /**
  * @fileoverview Handler tests for the three DataCanvas tools — query, describe,
  * drop. Covers the canvas-enabled happy paths (mocked canvas, no DuckDB),
- * the truncated flag, the dropped=true/false distinction, the empty-tables
+ * the truncated flag, query's inline response budget (the whole-row cut and the
+ * LIMIT/OFFSET continuation notice), the dropped=true/false distinction, the empty-tables
  * describe, and the canvas_disabled contract reason for describe and drop
  * (query's canvas_disabled is covered in list-intervals.tool.test.ts).
  *
@@ -11,8 +12,9 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { surfaceBytes } from '../helpers/surface-bytes.js';
 
 const getCanvas = vi.fn();
 
@@ -76,6 +78,149 @@ describe('paleobiology_dataframe_query (canvas enabled)', () => {
     const result = await dataframeQueryTool.handler(input, ctx);
     expect(result.truncated).toBe(true);
     expect(result.row_count).toBe(5000);
+  });
+
+  describe('inline response budget (#23)', () => {
+    const BUDGET = 100_000;
+
+    /** A canvas whose query() answers with these rows, as the DuckDB provider would. */
+    function answer(rows: Record<string, unknown>[], extra: { truncated?: boolean } = {}): void {
+      getCanvas.mockReturnValue(
+        fakeCanvas({
+          canvasId: 'abc1234567',
+          query: vi.fn().mockResolvedValue({
+            columns: Object.keys(rows[0] ?? {}),
+            rows,
+            rowCount: rows.length,
+            ...extra,
+          }),
+        }),
+      );
+    }
+
+    /** A staged occurrence row as SELECT * returns it (~680 bytes of JSON). */
+    const stagedRow = (i: number) => ({
+      occurrence_no: String(i),
+      collection_no: '11917',
+      identified_name: 'Tyrannosaurus rex',
+      identified_rank: 'species',
+      accepted_name: 'Tyrannosaurus rex',
+      accepted_rank: 'species',
+      accepted_no: '54833',
+      early_interval: 'Late Maastrichtian',
+      late_interval: null,
+      max_ma: 72.2,
+      min_ma: 66,
+      lng: -113.0289,
+      lat: 51.9064,
+      paleolng: -68.22,
+      paleolat: 64.06,
+      paleomodel: 'gplates',
+      geoplate: '101',
+      formation: 'Scollard',
+      geological_group: 'Edmonton',
+      member: null,
+      cc: 'CA',
+      state: 'Alberta',
+      county: 'Red Deer County',
+      classification:
+        '{"phylum":"Chordata","class":"Reptilia","order":"Saurischia","family":"Tyrannosauridae","genus":"Tyrannosaurus"}',
+      reference_no: '4218',
+    });
+
+    it('cuts SELECT * to the budget and names the LIMIT/OFFSET that continues it', async () => {
+      const rows = Array.from({ length: 500 }, (_, i) => stagedRow(i + 1));
+      answer(rows);
+
+      const result = await runToolContract(dataframeQueryTool, {
+        canvas_id: 'abc1234567',
+        sql: 'SELECT * FROM occurrences_abc1234567',
+      });
+
+      const bytes = surfaceBytes(result);
+      expect(bytes.structured).toBeLessThanOrEqual(BUDGET);
+      expect(bytes.text).toBeLessThanOrEqual(BUDGET);
+      const structured = result.structuredContent as {
+        rows: Record<string, unknown>[];
+        row_count: number;
+        truncated?: boolean;
+        notice: string;
+      };
+      const shown = structured.rows.length;
+      expect(shown).toBeGreaterThan(0);
+      expect(shown).toBeLessThan(500);
+      expect(structured.rows).toEqual(rows.slice(0, shown));
+      expect(structured.row_count).toBe(500);
+      expect(structured.truncated).toBeUndefined();
+      expect(structured.notice).toBe(
+        `Showing the first ${shown} of the 500 rows returned — the rest would exceed the inline response size. Read on over a stable order: ORDER BY columns unique per row, set LIMIT ${shown}, and raise the query's OFFSET by ${shown} (OFFSET ${shown} if it has none) for each next page, until a page returns fewer than ${shown} rows. If the query had its own LIMIT, stop once the pages read add up to it, lowering the last page's LIMIT to the rows that remain. A query without ORDER BY has no fixed row order, so add one and restart that walk at OFFSET 0.`,
+      );
+      expect(JSON.stringify(result.content)).toContain(`set LIMIT ${shown}`);
+    });
+
+    it('says the count stopped at the row cap on a truncated cross join', async () => {
+      const rows = Array.from({ length: 10_000 }, (_, i) => ({
+        occurrence_no: String(i % 500),
+        b_no: String(Math.floor(i / 500)),
+      }));
+      answer(rows, { truncated: true });
+
+      const result = await runToolContract(dataframeQueryTool, {
+        canvas_id: 'abc1234567',
+        sql: 'SELECT a.occurrence_no, b.occurrence_no AS b_no FROM t a CROSS JOIN t b',
+      });
+
+      const bytes = surfaceBytes(result);
+      expect(Math.max(bytes.structured, bytes.text)).toBeLessThanOrEqual(BUDGET);
+      const structured = result.structuredContent as {
+        rows: unknown[];
+        row_count: number;
+        truncated: boolean;
+        notice: string;
+      };
+      expect(structured).toMatchObject({ row_count: 10_000, truncated: true });
+      expect(structured.notice).toContain(
+        'The query produced more than 10000 rows — counting stopped at the 10000-row cap, so row_count is a floor, not the total. Wrap the query in SELECT COUNT(*) FROM (…) for the exact count.',
+      );
+      expect(structured.notice).toContain(
+        `Showing the first ${structured.rows.length} of the 10000 rows returned`,
+      );
+      expect(JSON.stringify(result.content)).toContain('counting stopped at the 10000-row cap');
+    });
+
+    it('withholds a row too large for the budget on its own and says so', async () => {
+      answer([{ occurrence_no: '1', blob: 'x'.repeat(120_000) }]);
+
+      const result = await runToolContract(dataframeQueryTool, {
+        canvas_id: 'abc1234567',
+        sql: 'SELECT occurrence_no, repeat(formation, 400) AS blob FROM t',
+      });
+
+      expect(result.isError).toBeFalsy();
+      const bytes = surfaceBytes(result);
+      expect(Math.max(bytes.structured, bytes.text)).toBeLessThanOrEqual(BUDGET);
+      expect(result.structuredContent).toEqual({
+        rows: [],
+        row_count: 1,
+        notice:
+          'The first result row alone exceeds the inline response size, so it is withheld and no rows are shown. Select fewer or narrower columns so a row fits, or step past it with OFFSET over a stable ORDER BY.',
+      });
+      expect(JSON.stringify(result.content)).toContain('so it is withheld and no rows are shown');
+    });
+
+    it('adds no notice when the whole result fits', async () => {
+      answer([{ formation: 'Hell Creek', n: 42 }]);
+
+      const result = await runToolContract(dataframeQueryTool, {
+        canvas_id: 'abc1234567',
+        sql: 'SELECT formation, COUNT(*) n FROM t GROUP BY formation',
+      });
+
+      expect(result.structuredContent).toEqual({
+        rows: [{ formation: 'Hell Creek', n: 42 }],
+        row_count: 1,
+      });
+    });
   });
 });
 

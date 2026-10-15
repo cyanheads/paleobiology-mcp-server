@@ -1,22 +1,22 @@
 /**
  * @fileoverview paleobiology_dataframe_drop — drop a staged canvas table.
- * Frees memory before the canvas TTL expires. Opt-in: this definition
- * remains registered with disabledTool() while off. It is callable and listed
- * in tools/list only when PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true.
+ * Frees memory before the canvas TTL expires. Opt-in: callable and listed in
+ * tools/list only when DataCanvas is on (CANVAS_PROVIDER_TYPE=duckdb) and
+ * PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true; otherwise the barrel registers it
+ * through disabledTool(). A canvas that is already gone is re-raised as this
+ * tool's own canvas_not_found, since acquire()'s re-stage hint is wrong here.
  * @module mcp-server/tools/definitions/dataframe-drop.tool
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { CanvasIdSchema } from '@cyanheads/mcp-ts-core/canvas';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getCanvas } from '@/services/canvas-accessor.js';
 
 export const dataframeDropTool = tool('paleobiology_dataframe_drop', {
   title: 'paleobiology-mcp-server: drop a staged canvas table',
   description:
-    'Drop a single staged table from a DataCanvas to free memory before its TTL expires. Reference ' +
-    'the table by the table_name paleobiology_search_occurrences returned or paleobiology_dataframe_describe ' +
-    'listed. Dropping a table that does not exist is reported as dropped=false, not an error.',
+    'Drop a single staged table from a DataCanvas to free memory before its TTL expires. Reference the table by the table_name paleobiology_search_occurrences returned or paleobiology_dataframe_describe listed. Dropping a table that does not exist is reported as dropped=false, not an error.',
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,
@@ -45,6 +45,13 @@ export const dataframeDropTool = tool('paleobiology_dataframe_drop', {
       recovery:
         'Set CANVAS_PROVIDER_TYPE=duckdb (and install @duckdb/node-api) to enable canvas operations.',
     },
+    {
+      reason: 'canvas_not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'The canvas_id names no live canvas — it expired or was never issued.',
+      recovery:
+        'The canvas has expired or never existed, so there is nothing left to drop. If you expected it to be live, check that the canvas_id was copied exactly.',
+    },
   ],
 
   async handler(input, ctx) {
@@ -52,7 +59,17 @@ export const dataframeDropTool = tool('paleobiology_dataframe_drop', {
     if (!canvas) {
       throw ctx.fail('canvas_disabled', 'DataCanvas is not enabled on this deployment.');
     }
-    const instance = await canvas.acquire(input.canvas_id, ctx);
+    const instance = await canvas.acquire(input.canvas_id, ctx).catch((err: unknown) => {
+      if (err instanceof McpError && err.data?.reason === 'canvas_not_found') {
+        throw ctx.fail(
+          'canvas_not_found',
+          `Canvas ${input.canvas_id} was not found — it expired or was never issued.`,
+          undefined,
+          { cause: err },
+        );
+      }
+      throw err;
+    });
     const dropped = await instance.drop(input.table_name);
     ctx.log.info('Canvas drop', {
       canvas_id: input.canvas_id,

@@ -7,7 +7,10 @@
  * bin's interval/max_ma/min_ma are always present, so a record missing them is
  * rejected rather than emitted temporally anonymous — the same rule applies to an
  * upstream-resolved interval, whose b_age/t_age invert into max_ma/min_ma and
- * whose scale_no resolves to a scale name.
+ * whose scale_no resolves to a scale name. Bibliographic references are mapped
+ * from live `refs/list` records (tests/fixtures/pbdb-refs-list.json): output names,
+ * string years/pages, the authorlist split with nameless entries dropped, and
+ * upstream text relayed verbatim.
  * @module tests/services/pbdb-normalizers
  */
 
@@ -17,6 +20,7 @@ import {
   normalizeDiversityBin,
   normalizeInterval,
   normalizeOccurrence,
+  normalizeReference,
   normalizeTaxon,
   normalizeTaxonStub,
 } from '@/services/pbdb/pbdb-service.js';
@@ -25,8 +29,10 @@ import type {
   PbdbDiversityRecord,
   PbdbIntervalRecord,
   PbdbOccurrenceRecord,
+  PbdbReferenceRecord,
   PbdbTaxonRecord,
 } from '@/services/pbdb/types.js';
+import { REFS_FIXTURE } from '../helpers/pbdb-refs.js';
 
 describe('normalizeOccurrence', () => {
   it('normalizes a full record, coercing string numbers and both coordinate systems', () => {
@@ -264,6 +270,21 @@ describe('normalizeCollection', () => {
     expect(c.n_occs).toBe(1);
   });
 
+  it('keeps every quote when the value is not wrapped as a whole (#34)', () => {
+    const lithdescript =
+      '"dark silty shales and sandstone" (Carpenter 1979) "upper very fine mudstone layer" (Wilson et al. 2010)';
+    const c = normalizeCollection({
+      collection_no: '14640',
+      lng: -104.7,
+      lat: 40.5,
+      early_interval: 'Late Maastrichtian',
+      lithdescript,
+      environment: '"lagoonal" or "estuarine"',
+    });
+    expect(c.lithology_description).toBe(lithdescript);
+    expect(c.environment).toBe('"lagoonal" or "estuarine"');
+  });
+
   it('omits lithology/environment entirely on a sparse locality', () => {
     const raw: PbdbCollectionRecord = {
       collection_no: '200',
@@ -358,5 +379,101 @@ describe('normalizeInterval', () => {
       t_age: 66,
     };
     expect(() => normalizeInterval(raw, scaleNames)).toThrow(/Ma boundaries/);
+  });
+});
+
+describe('normalizeReference', () => {
+  /** The live `refs/list` capture, keyed by reference_no. */
+  const refs = new Map(REFS_FIXTURE.map((r) => [Number(r.reference_no), r]));
+  const raw = (no: number): PbdbReferenceRecord => {
+    const r = refs.get(no);
+    if (!r) throw new Error(`fixture lacks reference ${no}`);
+    return r;
+  };
+
+  it('maps a journal article to the output names, keeping years and pages as strings', () => {
+    expect(normalizeReference(raw(149))).toEqual({
+      reference_no: 149,
+      citation:
+        'D. A. Bone, J. A. Todd, and S. Tracey. 1991. Fossils from the Bracklesham Group exposed in the M27 Motorway excavations, Southampton, Hampshire. Tertiary Research 12(3-4):131-137',
+      publication_type: 'journal article',
+      title:
+        'Fossils from the Bracklesham Group exposed in the M27 Motorway excavations, Southampton, Hampshire',
+      year: '1991',
+      authors: [
+        { first_name: 'D. A.', last_name: 'Bone' },
+        { first_name: 'J. A.', last_name: 'Todd' },
+        { first_name: 'S.', last_name: 'Tracey' },
+      ],
+      publication: 'Tertiary Research',
+      volume: '12',
+      issue: '3-4',
+      first_page: '131',
+      last_page: '137',
+      language: 'English',
+    });
+  });
+
+  it('carries editors, publisher, and doi on a book chapter; drops the low-signal raw fields', () => {
+    const r = normalizeReference(raw(962));
+    expect(r.editors).toEqual([
+      { first_name: 'W. A.', last_name: 'Berggren' },
+      { first_name: 'J. A.', last_name: 'Van Couvering' },
+    ]);
+    expect(r.publisher).toBe('Princeton University Press');
+    expect(r.doi).toBe('10.1515/9781400853281.339');
+    for (const rawOnly of ['record_type', 'ref_type', 'pubcity', 'formatted', 'author']) {
+      expect(r).not.toHaveProperty(rawOnly);
+    }
+  });
+
+  it('keeps sparse records sparse — absent upstream fields stay absent', () => {
+    expect(normalizeReference(raw(5923))).toEqual({
+      reference_no: 5923,
+      citation: 'A. K. Behrensmeyer. 1994.',
+      publication_type: 'unpublished',
+      year: '1994',
+      authors: [{ first_name: 'A. K.', last_name: 'Behrensmeyer' }],
+      language: 'English',
+    });
+    expect(normalizeReference(raw(5227))).not.toHaveProperty('publication_type');
+    // A book carries its title in pubtitle only — no title is invented from it.
+    expect(normalizeReference(raw(51520))).not.toHaveProperty('title');
+  });
+
+  it("drops PBDB's nameless authorlist entry and keeps the rest in order", () => {
+    const rawAuthors = raw(56724).author ?? [];
+    expect(rawAuthors).toHaveLength(19);
+    expect(rawAuthors[5]).toEqual({});
+    const authors = normalizeReference(raw(56724)).authors ?? [];
+    expect(authors).toHaveLength(18);
+    expect(authors[4]).toEqual({ first_name: 'S.', last_name: 'Nomade' });
+    expect(authors[5]).toEqual({ first_name: 'A.', last_name: 'Pereira' });
+  });
+
+  it('keeps a one-sided name and omits the missing side', () => {
+    const r = normalizeReference({
+      reference_no: '7',
+      formatted: 'Anonymous. 1900.',
+      author: [{ lastname: 'Anonymous' }, { firstname: '', lastname: '' }],
+    });
+    expect(r.authors).toEqual([{ last_name: 'Anonymous' }]);
+  });
+
+  it('omits authors entirely when every entry is nameless', () => {
+    const r = normalizeReference({ reference_no: '7', formatted: 'x.', author: [{}] });
+    expect(r).not.toHaveProperty('authors');
+  });
+
+  it('relays upstream text verbatim — CR/LF and a literal ampersand are not rewritten', () => {
+    const crlf = normalizeReference(raw(4398));
+    expect(crlf.title).toBe('The crocodilian Bernissartia in the Wealden of the Isle of Wight\r\n');
+    expect(crlf.citation).toContain('Isle of Wight\r\n. Palaeontology');
+    expect(normalizeReference(raw(51520)).publisher).toBe('Simon & Schuster');
+  });
+
+  it('rejects a record without its id or formatted citation rather than emitting a blank one', () => {
+    expect(() => normalizeReference({ reference_no: '149' })).toThrow(/formatted citation/);
+    expect(() => normalizeReference({ formatted: 'x.' })).toThrow(/formatted citation/);
   });
 });

@@ -13,9 +13,7 @@ import { getCanvas } from '@/services/canvas-accessor.js';
 export const dataframeDescribeTool = tool('paleobiology_dataframe_describe', {
   title: 'paleobiology-mcp-server: describe staged canvas tables',
   description:
-    'List the tables and their columns staged on a DataCanvas by paleobiology_search_occurrences. ' +
-    'Call this before paleobiology_dataframe_query to discover the exact table_name and column names ' +
-    'to reference in SQL.',
+    'List the tables and their columns staged on a DataCanvas by paleobiology_search_occurrences. Call this before paleobiology_dataframe_query to discover the exact table_name and column names to reference in SQL.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     canvas_id: CanvasIdSchema.describe(
