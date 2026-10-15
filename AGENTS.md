@@ -2,18 +2,20 @@
 
 **Server:** paleobiology-mcp-server
 **Version:** 0.3.7
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.11`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/server` ^2.2.0
-**Zod:** ^4.6.5
+**MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
+**Zod:** ^4.6.7
 
 > Fossil biodiversity over the Paleobiology Database (PBDB, paleobiodb.org/data1.2) —
-> keyless, CC BY 4.0. Eight `paleobiology_*` tools plus two `paleobiology://` resources:
-> `get_taxon` (name/id → accepted name, rank, classification, FAD/LAD range — the
+> keyless, CC BY 4.0. Six domain `paleobiology_*` tools, plus three dataframe tools listed
+> only when DataCanvas is on (`CANVAS_PROVIDER_TYPE=duckdb`), and three `paleobiology://`
+> resources: `get_taxon` (name/id → accepted name, rank, classification, FAD/LAD range — the
 > name-resolution gateway), `search_occurrences` (the flagship; large results spill to a
-> DataCanvas, queried via `dataframe_query` / `dataframe_describe`, freed via the
+> DataCanvas when it is on, read via `dataframe_describe` then `dataframe_query`, freed via the
 > opt-in `dataframe_drop`), `get_diversity` (origination/extinction curve through time),
-> `search_collections` (fossil localities), and `list_intervals` (the bundled ICS geologic
+> `search_collections` (fossil localities), `get_references` (row `reference_no` →
+> citation, batched), and `list_intervals` (the bundled ICS geologic
 > time scale — offline, with a PBDB fallback for sub-stage and regional names outside it).
 > No auth, no API key. Domain env vars: `PBDB_BASE_URL`,
 > `PBDB_TIMEOUT_MS`, `PBDB_MAX_OCCURRENCES`, `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED`.
@@ -65,6 +67,7 @@ to its typed contract reason via `ctx.fail` + `isNotFoundError` (a STRUCTURAL ch
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { blankAsUnset } from '@/mcp-server/tools/blank-as-unset.js';
 import { getPbdbService, isNotFoundError } from '@/services/pbdb/pbdb-service.js';
 
 export const getTaxonTool = tool('paleobiology_get_taxon', {
@@ -72,9 +75,10 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
   description: 'Resolve a taxon by name or integer taxon_no to its accepted name, rank, classification, and FAD/LAD range.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    name: z.string().optional().describe('Taxon name to resolve, e.g. "Tyrannosaurus". Provide this or taxon_no.'),
-    taxon_no: z.number().int().positive().optional().describe('PBDB taxon id. Provide this or name.'),
-    show_children: z.boolean().default(false).describe('When true, include immediate child taxa.'),
+    // blankAsUnset: a form client's "" for an untouched field reads as omitted.
+    name: blankAsUnset(z.string().optional()).describe('Taxon name to resolve, e.g. "Tyrannosaurus". Provide this or taxon_no.'),
+    taxon_no: z.number().int().positive().optional().describe('PBDB taxon id. Provide this or name, never both.'),
+    show_children: z.boolean().default(false).describe('When true, include a page of immediate child taxa.'),
   }),
   output: TaxonOutputSchema,
   errors: [
@@ -84,11 +88,17 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
     { reason: 'missing_selector', code: JsonRpcErrorCode.InvalidParams,
       when: 'Neither name nor taxon_no was provided.',
       recovery: 'Provide either a taxon name or a positive integer taxon_no.' },
+    { reason: 'conflicting_selector', code: JsonRpcErrorCode.InvalidParams,
+      when: 'Both name and taxon_no were provided — the lookup takes exactly one selector.',
+      recovery: 'Send taxon_no alone when the id is already resolved, or name alone — drop the other and retry.' },
   ],
 
   async handler(input, ctx) {
-    if (!input.name && input.taxon_no == null) {
+    if (input.name == null && input.taxon_no == null) {
       throw ctx.fail('missing_selector', 'Provide either a name or a taxon_no.');
+    }
+    if (input.name != null && input.taxon_no != null) {
+      throw ctx.fail('conflicting_selector', 'Provide one selector, not both.');
     }
     try {
       return shapeOutput(await getPbdbService().getTaxon(argsFrom(input), ctx));
@@ -153,28 +163,38 @@ timeout, the occurrence row cap, and the opt-in dataframe-drop flag.
 ```ts
 // src/config/server-config.ts — lazy-parsed, separate from framework config
 import { z } from '@cyanheads/mcp-ts-core';
-import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
+import { normalizeEnv, parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
   pbdbBaseUrl: z.string().url().default('https://paleobiodb.org/data1.2').describe('Base URL for the PBDB REST API (no trailing slash).'),
   pbdbTimeoutMs: z.coerce.number().int().positive().default(30_000).describe('Per-request timeout in ms for PBDB calls.'),
-  pbdbMaxOccurrences: z.coerce.number().int().positive().default(1000).describe('Hard cap on occurrence rows pulled per call before the canvas spill closes the stream.'),
-  dataframeDropEnabled: z.stringbool().default(false).describe('When true, enables paleobiology_dataframe_drop. Off by default.'),
+  pbdbMaxOccurrences: z.coerce.number().int().positive().default(1000).describe('Hard cap on occurrence or collection rows pulled per call. The tools already pull at most 500 per call, so only a lower value takes effect.'),
+  dataframeDropEnabled: z.stringbool().default(false).describe('When true, enables paleobiology_dataframe_drop (DataCanvas must also be on). Off by default.'),
 });
+
+const ENV_MAP = {
+  pbdbBaseUrl: 'PBDB_BASE_URL',
+  pbdbTimeoutMs: 'PBDB_TIMEOUT_MS',
+  pbdbMaxOccurrences: 'PBDB_MAX_OCCURRENCES',
+  dataframeDropEnabled: 'PALEOBIOLOGY_DATAFRAME_DROP_ENABLED',
+} as const;
 
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
 export function getServerConfig() {
-  _config ??= parseEnvConfig(ServerConfigSchema, {
-    pbdbBaseUrl: 'PBDB_BASE_URL',
-    pbdbTimeoutMs: 'PBDB_TIMEOUT_MS',
-    pbdbMaxOccurrences: 'PBDB_MAX_OCCURRENCES',
-    dataframeDropEnabled: 'PALEOBIOLOGY_DATAFRAME_DROP_ENABLED',
-  });
+  _config ??= parseEnvConfig(ServerConfigSchema, ENV_MAP); // called in setup()
   return _config;
+}
+
+// The tool barrel's module-load gate reads only its own flag and never throws.
+export function isDataframeDropEnabled(): boolean {
+  const parsed = ServerConfigSchema.pick({ dataframeDropEnabled: true }).safeParse(
+    normalizeEnv({ dataframeDropEnabled: process.env[ENV_MAP.dataframeDropEnabled] }),
+  );
+  return parsed.success && parsed.data.dataframeDropEnabled;
 }
 ```
 
-`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`PBDB_TIMEOUT_MS`) not the path (`pbdbTimeoutMs`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
+`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`PBDB_TIMEOUT_MS`) not the path (`pbdbTimeoutMs`). Throws `ConfigurationError`, which the framework prints as a clean startup banner — but only from `setup()`. A parse at module load (a tool-registration gate) runs before the banner handler exists and dies on a raw stack, so gates read their one field with `safeParse` and leave the full parse to `setup()`. The DataCanvas gate reads the framework's own `config.canvas.providerType`, already parsed at package import.
 
 For env booleans use `z.stringbool()`, never `z.coerce.boolean()` — `Boolean("false")` is `true`, so a coerced flag can't be disabled through the environment. `z.stringbool()` parses `true/false/1/0/yes/no/on/off` and rejects anything else, so `=false` actually disables.
 
@@ -429,7 +449,7 @@ security: false                            # optional — true ONLY for a source
 
 ## Publishing
 
-**Every release goes through a release PR, straight-through** — `git-wrapup`'s "Release PR mode", mode `straight-through`. One run: `git-wrapup` lands the commit stack on `release/<version>`, pushes it, and opens the PR (title = the release commit subject, body = the changelog entry plus a gates section); `release-and-publish` then fast-forwards `main` locally with `git merge --ff-only`, creates the tag on `main`'s tip, pushes `main` and the tag, deletes the branch, and publishes. A caller's brief may run a given release as `gated` instead — a `release-pr-review` pass on the open PR before `release-and-publish`. **Never merge through the GitHub UI or `gh pr merge`**: squash and rebase-merge are disabled in the repo settings because both rewrite the stack (rebase-merge also strips the SSH signatures), and a merge commit breaks the linear history.
+**Every release goes through a release PR, straight-through** — `git-wrapup`'s "Release PR mode", mode `straight-through`. One run: `git-wrapup` lands the commit stack on `release/<version>`, pushes it, and opens the PR (title = the release commit subject, body = the release digest: theme line, `## Changes`, `## Gates`, changelog link last); `release-and-publish` then fast-forwards `main` locally with `git merge --ff-only`, creates the tag on `main`'s tip, pushes `main` and the tag, deletes the branch, and publishes. A caller's brief may run a given release as `gated` instead — a `release-pr-review` pass on the open PR before `release-and-publish`. **Never merge through the GitHub UI or `gh pr merge`**: squash and rebase-merge are disabled in the repo settings because both rewrite the stack (rebase-merge also strips the SSH signatures), and a merge commit breaks the linear history.
 
 ---
 

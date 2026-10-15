@@ -16,19 +16,23 @@ and when life existed across ~540 million years. Keyless, CC BY.
 
 | Tool | Summary | readOnlyHint | openWorldHint | Key inputs | Output shape |
 |---|---|---|---|---|---|
-| `paleobiology_search_occurrences` | Fossil occurrences filtered by taxon, geologic interval (named or Ma range), geographic bbox, and environment. The flagship. Large sets spill to DataCanvas. | `true` | `true` | `base_name` (clade-inclusive) \| `base_id` (clade-inclusive, positive int) \| `taxon_name` (exact), `interval` \| (`max_ma` ≥0, `min_ma` ≥0), `lngmin`/`lngmax`/`latmin`/`latmax` (bbox, degrees), `environment` (enum: `"marine"` \| `"terrestrial"` \| `"freshwater"` — optional), `limit` (int, 1–500, default 100), `offset` (int, ≥0, default 0), `canvas_id` | `{ occurrences[], total, truncated?, canvas_id?, table_name?, spilled }` |
+| `paleobiology_search_occurrences` | Fossil occurrences filtered by taxon, geologic interval (named or Ma range), geographic bbox, and environment. The flagship. Large sets spill to DataCanvas. | `true` | `true` | `base_name` (clade-inclusive) \| `base_id` (clade-inclusive, positive int) \| `taxon_name` (exact), `interval` \| (`max_ma` ≥0, `min_ma` ≥0), `lngmin`/`lngmax`/`latmin`/`latmax` (bbox, degrees), `environment` (enum: `"marine"` \| `"terrestrial"` \| `"freshwater"` — optional), `limit` (int, 1–10,000, default 100; up to 500 served per call), `offset` (int, ≥0, default 0), `canvas_id` | `{ occurrences[], spilled, canvas_id?, table_name?, row_count }` + enrichment `totalCount`, `notice?` |
 | `paleobiology_get_taxon` | Taxonomic record + fossil temporal range (FAD/LAD) by name or `taxon_no`: accepted name, rank, classification, parent + immediate children, occurrence count, and `taxon_no` for chaining into occurrence/diversity searches. Resolves names for the other tools. | `true` | `true` | `name` (string) \| `taxon_no` (positive int — from prior `get_taxon` or `accepted_no` on occurrence rows), `show_children` (bool, default false), `children_offset` (int, ≥0, default 0) | `{ taxon { taxon_no, accepted_name, rank, … }, classification, parent?, children[], children_offset?, children_truncated?, range, occurrence_count }` |
 | `paleobiology_get_diversity` | Diversity / origination / extinction through time for a clade over an interval, binned by period/epoch/age. Returns the full bin set inline — a diversity curve is a bounded set of geologic-interval bins (≤ ~100), small enough to inline. | `true` | `true` | `base_name` \| `base_id` (exactly one required), `count` (enum: `"genera"` \| `"species"` \| `"families"`, default `"genera"`), `resolution` (enum: `"period"` \| `"epoch"` \| `"age"`, default `"period"`), `interval` \| (`max_ma` ≥0, `min_ma` ≥0) | `{ bins[] }` |
 | `paleobiology_list_intervals` | The geologic time scale: eons→ages with absolute-age boundaries (Ma) and nesting. Reference lookup that grounds every temporal filter; translates "Late Cretaceous" ↔ "100.5–66.0 Ma". Browsing and every international-scale name come from the bundled ICS snapshot with no upstream call; a name outside it (`Late Maastrichtian`, `Lancian`) costs one PBDB lookup across the other scales. | `true` | `true` | `name` (substring match against the snapshot, exact match upstream), `min_ma` (≥0), `max_ma` (≥0), `level` (enum: `"eon"` \| `"era"` \| `"period"` \| `"epoch"` \| `"age"`) | `{ intervals[{ …, scale? }], source, snapshot_version }` |
-| `paleobiology_search_collections` | Fossil collections (localities) by area + interval: location, age, formation/strata, lithology, depositional environment, and co-occurring taxa count. The "what's been dug up here, from what rock" view — a find-then-drill-in locality index, returned paginated inline. | `true` | `true` | `base_name` \| `base_id`, `interval` \| (`max_ma` ≥0, `min_ma` ≥0), `lngmin`/`lngmax`/`latmin`/`latmax` (bbox), `formation`, `lithology`, `environment` (enum: same as occurrences), `limit` (int, 1–500, default 100), `offset` (int, ≥0, default 0) | `{ collections[{ collection_no, … }], total, truncated?, shown }` |
-| `paleobiology_dataframe_query` | Run a read-only SQL `SELECT` over occurrence result sets staged on a DataCanvas by `paleobiology_search_occurrences` (count by interval, group by formation/country/lithology, map by region). | `true` | `false` | `canvas_id`, `sql` (SELECT only) | `{ rows[], row_count, truncated? }` |
+| `paleobiology_search_collections` | Fossil collections (localities) by area + interval: location, age, formation/strata, lithology, depositional environment, and co-occurring taxa count. The "what's been dug up here, from what rock" view — a find-then-drill-in locality index, returned paginated inline. | `true` | `true` | `base_name` \| `base_id`, `interval` \| (`max_ma` ≥0, `min_ma` ≥0), `lngmin`/`lngmax`/`latmin`/`latmax` (bbox), `formation`, `lithology`, `environment` (enum: same as occurrences), `limit` (int, 1–10,000, default 100; up to 500 served per call), `offset` (int, ≥0, default 0) | `{ collections[{ collection_no, … }] }` + enrichment `totalCount?`, `truncated?`, `shown?`, `cap?`, `notice?` |
+| `paleobiology_get_references` | Resolve the `reference_no` on occurrence and collection rows to bibliographic citations, batched: one PBDB `refs/list` request per call resolves the first 25 distinct ids, the rest return in `remaining_reference_nos`. A miss is a result (`not_found`), not an error. | `true` | `true` | `reference_nos` (positive ints, 1–500; repeats resolved once) | `{ references[{ reference_no, citation, title?, year?, authors?, editors?, publication?, volume?, issue?, first_page?, last_page?, publisher?, language?, doi?, publication_type? }], not_found[], remaining_reference_nos? }` |
+| `paleobiology_dataframe_query` | Run a read-only SQL `SELECT` over occurrence result sets staged on a DataCanvas by `paleobiology_search_occurrences` (count by interval, group by formation/country, roll up by family, map by region). | `true` | `false` | `canvas_id`, `sql` (SELECT only) | `{ rows[], row_count, truncated? }` |
 | `paleobiology_dataframe_describe` | List the tables and columns staged on a canvas — discover names before writing SQL for `paleobiology_dataframe_query`. | `true` | `false` | `canvas_id` | `{ tables[{ name, kind, row_count, columns[] }] }` |
-| `paleobiology_dataframe_drop` | Drop a staged table from a canvas to free memory before its TTL expires. Opt-in — registered only when `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true`. | `false` | `false` | `canvas_id`, `table_name` | `{ dropped }` |
+| `paleobiology_dataframe_drop` | Drop a staged table from a canvas to free memory before its TTL expires. Opt-in — listed only when DataCanvas is on and `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true`. | `false` | `false` | `canvas_id`, `table_name` | `{ dropped, table_name }` |
 
-Tool counts: **7–8 tools** — 5 domain/workflow tools + the standardized
-3-tool DataCanvas set, of which 2 always register and 1 is opt-in. Exactly **one** domain tool
+Tool counts: **6, 8, or 9 listed tools** — 6 domain/workflow tools + the standardized
+3-tool DataCanvas set, which is listed only when DataCanvas is on (`CANVAS_PROVIDER_TYPE=duckdb`):
+query and describe with the canvas, drop also behind its own flag. Gated tools register
+through `disabledTool()`, so they stay off `tools/list` but appear on the HTTP landing page
+with the setting that enables them. Exactly **one** domain tool
 spills to a canvas: `paleobiology_search_occurrences` (occurrence rows are tabular and
-analytical — count by interval, group by formation/country/lithology over large broad-query
+analytical — count by interval, group by formation/country over large broad-query
 sets). `paleobiology_get_diversity` and `paleobiology_search_collections` were pruned from the
 spill path by the earns-its-keep gate (see Design Decisions). The DataCanvas standard for any
 server that still spills is three tools:
@@ -36,9 +40,9 @@ server that still spills is three tools:
 emits a `canvas_id` MUST ship a `dataframe_query` tool in the same server, or the `canvas_id`
 is dead output the agent cannot reach**), `paleobiology_dataframe_describe` (lists staged
 tables/columns so the agent can discover names before writing SQL), and
-`paleobiology_dataframe_drop` (opt-in, registered only when
-`PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true`, default off — so the default surface is 7 tools,
-8 with drop enabled). See `api-canvas`.
+`paleobiology_dataframe_drop` (opt-in, listed only when DataCanvas is on and
+`PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true`, default off — so the default surface is 6 tools,
+8 with the canvas on, 9 with drop enabled too). See `api-canvas`.
 
 ### Resources
 
@@ -46,11 +50,13 @@ tables/columns so the agent can discover names before writing SQL), and
 |---|---|---|
 | `paleobiology://occurrence/{occurrence_no}` | One fossil occurrence (full `show` blocks: coords + paleo-coords, classification, strata, locality). | Convenience mirror of a single-occurrence read; `paleobiology_search_occurrences` covers the same data for tool-only clients. |
 | `paleobiology://taxon/{taxon_no}` | One taxon record + fossil range + classification. | Mirror of `paleobiology_get_taxon` by `taxon_no`. |
+| `paleobiology://reference/{reference_no}` | One bibliographic reference (formatted citation + structured fields). | Mirror of one `paleobiology_get_references` entry; a miss fails `reference_not_found`. |
 
-Resources are supplementary (many clients are tool-only). Both are read-only, stable-URI,
+Resources are supplementary (many clients are tool-only). All three are read-only, stable-URI,
 useful-as-injectable-context lookups whose data is fully reachable through the tool surface.
 `occurrence_no` and `taxon_no` are bare integers obtained from
-`paleobiology_search_occurrences` / `paleobiology_get_taxon` output respectively.
+`paleobiology_search_occurrences` / `paleobiology_get_taxon` output respectively;
+`reference_no` comes from occurrence and collection rows.
 
 ### Prompts
 
@@ -106,6 +112,8 @@ every request and the right `show` blocks per tool; raw codes never reach the ag
   name→Ma and Ma→names.
 - Find fossil collections (localities) by area + interval with their strata, lithology,
   environment, and co-occurring taxa.
+- Resolve the `reference_no` on occurrence and collection rows to bibliographic citations,
+  many ids per call.
 - Surface **both** coordinate systems on every occurrence — modern lat/lng and
   paleo-coordinates (where the landmass sat at the time) — distinctly labeled.
 - Echo **both** named interval and Ma boundaries on every temporal result.
@@ -138,7 +146,7 @@ every request and the right `show` blocks per tool; raw codes never reach the ag
   `ctx.enrich.total(...)`) states the real remainder. Cost: an upstream COUNT pass per call.
   PBDB's companion `records_returned` is not usable — it goes negative once `offset` runs past
   the end — so count the parsed rows instead.
-- **Zod constraints:** `occurrence_no` / `taxon_no` / `collection_no` → `z.number().int().positive()`; `max_ma` / `min_ma` → `z.number().nonnegative()`; `limit` → `z.number().int().min(1).max(500).default(100)`; bbox fields → `z.number()` with coordinate-range bounds (`lng` −180…180, `lat` −90…90); `environment`, `count`, `resolution`, `level` → `z.enum([...])`. Format constraints live in Zod validators, not only in `.describe()` prose.
+- **Zod constraints:** `occurrence_no` / `taxon_no` / `collection_no` → `z.number().int().positive()`; `max_ma` / `min_ma` → `z.number().nonnegative()`; `limit` → `z.number().int().min(1).max(10_000).default(100)` (a ceiling against absurd input; the per-call cap of 500 is applied in the handler); bbox fields → `z.number()` with coordinate-range bounds (`lng` −180…180, `lat` −90…90); `environment`, `count`, `resolution`, `level` → `z.enum([...])`. Format constraints live in Zod validators, not only in `.describe()` prose.
 
 **Out of scope (v1)**
 
@@ -166,6 +174,8 @@ surface **bare integers** to the agent and document which tool emits each.
 >   collection ref) or `paleobiology_search_collections` output.
 > - `canvas_id` ← `paleobiology_search_occurrences` when a result spills (the only tool that
 >   stages a canvas).
+> - `reference_no` ← occurrence and collection rows; `paleobiology_get_references` and the
+>   `paleobiology://reference/{reference_no}` resource resolve it to a citation.
 
 ```ts
 /** A fossil occurrence — one identified specimen-set at one collection. */
@@ -249,6 +259,17 @@ interface Collection {
   reference_no: number;
 }
 
+/** A bibliographic reference (from `refs/list`, resolved by reference_no). */
+interface Reference {
+  reference_no: number;
+  citation: string;               // PBDB's formatted citation, plain text, verbatim
+  publication_type?: string; title?: string; year?: string; // year and pages stay strings
+  authors?: { first_name?: string; last_name?: string }[];
+  editors?: { first_name?: string; last_name?: string }[];
+  publication?: string; volume?: string; issue?: string;
+  first_page?: string; last_page?: string; publisher?: string; language?: string; doi?: string;
+}
+
 type TaxonRank =
   | 'subspecies' | 'species' | 'genus' | 'subgenus' | 'family' | 'order'
   | 'class' | 'phylum' | 'kingdom' | 'unranked clade' | string; // PBDB ranks; widened
@@ -266,9 +287,9 @@ block's boundary-crosser counts) are computed in the normalizer.
 
 | Service | Responsibility | Key methods |
 |---|---|---|
-| `PbdbService` (`src/services/pbdb/pbdb-service.ts`) | The PBDB HTTP client. Builds requests with `vocab=pbdb` + per-tool `show` blocks, wraps `fetchWithTimeout` + `withRetry`, parses + normalizes compact responses into the `Data Model` types, and carries the envelope metadata — upstream `warnings[]` and the `rowcount` match count — out alongside the records. One method per resource family. `searchOccurrences` returns a handle (`{ rows, meta }`) rather than a bare generator: `spillover()` and `for await` both discard a generator's return value, so the total and warnings need a channel the caller still holds after the drain. `lookupInterval` is the exception to "one method per family" being purely record-shaped: it also resolves the `scale_no` → scale-name directory (a separate `timescales/list` call, cached per process) so an off-international-scale hit is labeled rather than tagged with an opaque number. | `searchOccurrences(filter)`, `getOccurrence(id)`, `getTaxon({name\|taxonNo, showChildren})`, `getDiversity(filter)`, `searchCollections(filter)`, `lookupInterval(name)` |
+| `PbdbService` (`src/services/pbdb/pbdb-service.ts`) | The PBDB HTTP client. Builds requests with `vocab=pbdb` + per-tool `show` blocks, wraps `fetchWithTimeout` + `withRetry`, parses + normalizes compact responses into the `Data Model` types, and carries the envelope metadata — upstream `warnings[]` and the `rowcount` match count — out alongside the records. One method per resource family. `searchOccurrences` returns the normalized page with its envelope metadata (`{ rows, meta }`). `lookupInterval` is the exception to "one method per family" being purely record-shaped: it also resolves the `scale_no` → scale-name directory (a separate `timescales/list` call, cached per process) so an off-international-scale hit is labeled rather than tagged with an opaque number. | `searchOccurrences(filter)`, `getOccurrence(id)`, `getTaxon({name\|taxonNo, showChildren})`, `getDiversity(filter)`, `searchCollections(filter)`, `lookupInterval(name)`, `getReferences(referenceNos)` |
 | `IntervalIndex` (`src/services/intervals/interval-index.ts`) | In-memory index over the **bundled** geologic time-scale snapshot (the ICS international scale, `scale_id=1`). Backs the offline half of `paleobiology_list_intervals` — browsing and every international-scale name — with no network call, and provides name↔Ma resolution the other services use to validate/echo temporal filters. Small bounded set (171 intervals) → server-level in-memory index, not a `MirrorService` and not a DataCanvas. **Only the ICS international scale is bundled** — no `scale` input filter is exposed; the snapshot's ICS version and generation date are surfaced as `snapshot_version` in the `paleobiology_list_intervals` output so consumers can cite it. The index stays synchronous: the upstream fallback for a name it does not carry lives in the tool handler, which owns the network call and the `source` labeling. | `byName(name)`, `filter(opts)`, `all(level?)`, plus the module-level `filterIntervals(intervals, opts)` the handler reuses on an upstream hit |
-| `canvas-accessor` (`src/services/canvas-accessor.ts`) | Module-level `getCanvas()`/`setCanvas()` accessor wired from `setup(core)`. The spill path: the `paleobiology_search_occurrences` handler `spillover()`s large occurrence result sets onto a canvas; the `dataframe_*` tools query/describe/drop it. | `getCanvas()`, `setCanvas(core.canvas)` |
+| `canvas-accessor` (`src/services/canvas-accessor.ts`) | Module-level `getCanvas()`/`setCanvas()` accessor wired from `setup(core)`. The spill path: the `paleobiology_search_occurrences` handler stages an occurrence page that outgrows the inline budget onto a canvas; the `dataframe_*` tools query/describe/drop it. | `getCanvas()`, `setCanvas(core.canvas)` |
 
 The interval snapshot is a checked-in TypeScript module (`src/services/intervals/time-scale-data.ts`)
 derived once from PBDB `/intervals/list?scale_id=1` (the ICS international scale). It is loaded
@@ -300,18 +321,18 @@ to retry.
 |---|---|---|---|---|
 | `PBDB_BASE_URL` | `pbdbBaseUrl` | optional | `https://paleobiodb.org/data1.2` | PBDB API base; override for a mirror/proxy or pinned API version. |
 | `PBDB_TIMEOUT_MS` | `pbdbTimeoutMs` | optional | `30000` | Per-request timeout. Diversity queries over large clades can take ~0.5s+ upstream; keep generous. |
-| `PBDB_MAX_OCCURRENCES` | `pbdbMaxOccurrences` | optional | `1000` | Hard cap on rows pulled per occurrence call before the canvas spill closes the stream. Also bounds the inline collection list (it pages, never spills). |
-| `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED` | `dataframeDropEnabled` | optional | `false` | Set to `true` to register `paleobiology_dataframe_drop`. Off by default — the tool is conditionally registered, so it's absent from the surface unless opted in. Use `z.stringbool()`, not `z.coerce.boolean()`. |
-| `CANVAS_PROVIDER_TYPE` | (framework) | optional | `none` | Set to `duckdb` to enable DataCanvas. When `none`, `paleobiology_search_occurrences` returns its inline preview only (no usable `canvas_id`) and the `dataframe_*` tools throw a clear "canvas disabled" error. |
+| `PBDB_MAX_OCCURRENCES` | `pbdbMaxOccurrences` | optional | `1000` | Hard cap on rows pulled per occurrence call: the smallest of this, the caller's `limit`, and the per-call cap of 500 is sent to PBDB as its `limit`, so only a value below 500 takes effect. Also bounds the inline collection list (it pages, never spills). |
+| `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED` | `dataframeDropEnabled` | optional | `false` | Set to `true` to list `paleobiology_dataframe_drop` (DataCanvas must also be on). Off by default — the tool registers through `disabledTool()`, so it's absent from `tools/list` unless opted in. The barrel reads only this field at module load (a non-throwing `safeParse`); the full server config is parsed in `setup()`, so a bad value in any server env var fails startup behind the configuration banner. Use `z.stringbool()`, not `z.coerce.boolean()`. |
+| `CANVAS_PROVIDER_TYPE` | (framework) | optional | `none` | Set to `duckdb` to enable DataCanvas. When `none`, `paleobiology_search_occurrences` returns its inline preview only (no usable `canvas_id`) and the `dataframe_*` tools are left off `tools/list` (shown as disabled on the HTTP landing page). |
 
 No API key — PBDB is keyless. Without `CANVAS_PROVIDER_TYPE=duckdb` the server degrades
 gracefully: `paleobiology_search_occurrences` still returns its inline preview and `total`, it
-just doesn't emit a usable `canvas_id`, and the `dataframe_*` tools fail with an actionable
-message naming the env var to set. (Diversity and collections never spill, so the canvas flag
-doesn't affect them at all.)
+just doesn't emit a usable `canvas_id`, and the `dataframe_*` tools are not listed, so no
+client is offered a tool that cannot work; the landing page names the env var to set. (Diversity
+and collections never spill, so the canvas flag doesn't affect them at all.)
 
-`@duckdb/node-api` is an optional peer dependency (`bun add @duckdb/node-api`) — only needed
-when canvas is enabled; zero install cost otherwise.
+`@duckdb/node-api` is a regular dependency in `package.json`, installed with the server. The
+framework lazy-loads it on the first canvas use, so with the canvas off it is never loaded.
 
 ---
 
@@ -335,10 +356,10 @@ Each step is independently buildable + testable.
    bbox × environment), modern + paleo coords, inline preview + `total`. Land it *before*
    wiring canvas so the read path is verifiable on its own.
 5. **DataCanvas spill + the 3-tool dataframe set.** `canvas-accessor`, wire `setCanvas` in
-   `setup()`, add `spillover()` to `paleobiology_search_occurrences` (the only spilling tool).
+   `setup()`, add the canvas spill to `paleobiology_search_occurrences` (the only spilling tool).
    Ship `paleobiology_dataframe_query` + `paleobiology_dataframe_describe` together (the
-   `canvas_id`-without-query-tool rule), and `paleobiology_dataframe_drop` conditionally
-   registered behind `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED` (off by default).
+   `canvas_id`-without-query-tool rule), and `paleobiology_dataframe_drop` gated behind
+   `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED` (off by default).
 6. **`paleobiology_get_diversity`.** Diversity/origination/extinction binning, returned inline
    — a bounded bin set (≤ ~100 geologic intervals), no canvas spill.
 7. **`paleobiology_search_collections`.** Locality search + strata/lithology/environment,
@@ -402,7 +423,7 @@ a reconciliation surfaced as the `identified_name` vs `accepted_name` split.
 
 ## Design Decisions
 
-- **5 domain tools, not a PBDB endpoint mirror.** Each tool is a user goal ("when did this
+- **6 domain tools, not a PBDB endpoint mirror.** Each tool is a user goal ("when did this
   live", "plot diversity"), not a 1:1 wrap of `/occs/list` etc. The `/taxa/single` +
   `/taxa/list` pair collapses into one `paleobiology_get_taxon` (range + classification +
   children in one call); `/occs/diversity` + `/occs/prevalence` collapse into
@@ -430,7 +451,7 @@ a reconciliation surfaced as the `identified_name` vs `accepted_name` split.
   (disqualified regardless of row count); and (2) it's *too big to inline* (> ~100 rows).
   Applying it tool by tool:
   - `paleobiology_search_occurrences` — **spills.** Occurrence rows are tabular and analytical
-    (count by interval, group by formation/country/lithology over large broad-`base_name`
+    (count by interval, group by formation/country over large broad-`base_name`
     sets), and broad queries blow past the inline budget. Passes both gates.
   - `paleobiology_get_diversity` — **inline, no spill.** A diversity curve is a bounded set of
     geologic-interval bins (≤ ~100 even at age resolution), so it fails the size gate. The
@@ -449,7 +470,9 @@ a reconciliation surfaced as the `identified_name` vs `accepted_name` split.
   Because exactly one tool emits a `canvas_id`, the standardized DataCanvas set still applies:
   `paleobiology_dataframe_query` (mandatory — a `canvas_id` with no query tool is dead output),
   `paleobiology_dataframe_describe` (table/column discovery), and `paleobiology_dataframe_drop`
-  (opt-in via `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED`, default off, conditionally registered).
+  (opt-in via `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED`, default off, registered through `disabledTool()` until enabled).
+  Canvas presence gates the whole set: with DataCanvas off no tool emits a usable `canvas_id`,
+  so listing the trio would only offer calls that always fail.
 - **`base_name` (clade-inclusive) is the default taxon filter** for occurrence/diversity/
   collection search, with `taxon_name` (exact) as the narrower option — PBDB's `base_name`
   pulls a taxon and all its descendants, which is what "dinosaur diversity" or "Panthera
@@ -461,7 +484,19 @@ a reconciliation surfaced as the `identified_name` vs `accepted_name` split.
   400, but each tool guards it locally (`conflicting_taxon_filter`) so the agent gets a typed
   reason and a tailored recovery hint rather than PBDB's own wording. `paleobiology_get_diversity`'s
   `base_name` is optional as a result — exactly one of the two selectors is required, enforced by
-  its `missing_filter` guard.
+  its `missing_filter` guard. `paleobiology_get_taxon`'s `name` and `taxon_no` follow the same
+  rule (`conflicting_selector`), rejected even when both name the same taxon: PBDB answers the
+  pair with a 400 the service reads as not-found, so an unguarded pair reported "no such taxon".
+- **A blank optional string is unset.** Form-based clients send every optional field, `""` for
+  the empty ones; the framework deletes a `null` at an optional key but leaves `""`. A blank
+  that counts as supplied trips the `missing_filter` / conflicting-selector guards, fails enum
+  validation, or reaches PBDB as a real value. One shared wrapper
+  (`src/mcp-server/tools/blank-as-unset.ts`) maps a blank or whitespace-only string to
+  `undefined` before the field's schema runs, on the optional string and enum inputs of the five
+  filter-taking domain tools (every one but `paleobiology_get_references`); a defaulted enum keeps its `.default()` inside the wrapper so a blank still gets
+  the default. The wrapper is invisible in `tools/list` and no `.describe()` mentions blanks — the
+  blank is tolerated, not offered as input. Number fields stay unwrapped: the schema already
+  rejects `""` there, and wrapping one would cost it the framework's `"3"` → `3` repair.
 - **`environment` is a coarse enum, not a free string.** PBDB's `envtype` accepts a limited
   vocabulary (`"marine"`, `"terrestrial"`, `"freshwater"`). The Zod enum must match this
   exactly; the `.describe()` lists all valid values so a weaker model doesn't invent values.
@@ -476,17 +511,39 @@ a reconciliation surfaced as the `identified_name` vs `accepted_name` split.
 
 ## Output Design Notes
 
-- **Spill trigger.** Only `paleobiology_search_occurrences` spills. Its handler uses
-  `spillover()` with a character budget (`previewChars`) — show an inline preview (the
-  immediate answer), stage the full set on the canvas, return `canvas_id` + `table_name` +
-  `spilled`. The preview is sized in characters of `JSON.stringify(row)`, not row count
-  (occurrence rows vary widely). Target ≈25k tokens inline (`previewChars: 100_000`).
-  `paleobiology_get_diversity` returns its full bin set inline (bounded); `paleobiology_search_collections`
-  pages inline.
+- **One inline budget: 100,000 bytes per surface.** `paleobiology_search_occurrences`,
+  `paleobiology_search_collections`, and `paleobiology_dataframe_query` cut their rows to the
+  longest whole-row prefix whose UTF-8 cost fits 100,000 bytes on BOTH client surfaces — the
+  `structuredContent` JSON and the `content[]` text — less a fixed reserve for the envelope,
+  header, and enrichment trailer (`src/mcp-server/tools/inline-budget.ts`). Row counts are a
+  leaky proxy (500 narrow aggregates are ~30 KB, 500 occurrence rows ~300 KB), so the budget is
+  measured in bytes, ≈25k tokens. It is a constant, not an env var: a deploy-tunable threshold
+  would drift a tool's output shape across environments. Both surfaces always carry the same
+  rows. A search page cut by the budget keeps `totalCount` and names the next offset
+  (`offset` + rows delivered); a cut `dataframe_query` result names the rows shown and the
+  `ORDER BY … LIMIT/OFFSET` that continues it, relative to the query's own OFFSET, and a row too
+  large on its own is withheld with a notice. *Decision:* SQL `LIMIT/OFFSET` is the query
+  continuation rather than an `offset` input, since it is native to the caller's own SQL.
+- **`limit` serves up to its cap.** Both list searches pull at most 500 rows per call; `limit`
+  accepts up to 10,000 (a guard against absurd input), and 501–10,000 is served at 500 with
+  the cap named in the notice.
+- **Spill trigger.** Only `paleobiology_search_occurrences` spills. PBDB answers the whole page
+  in one request, so the handler drains it and decides overflow against the inline budget on
+  the page itself, before touching the canvas. A page that fits returns inline and never calls
+  `acquire()` — no canvas is minted and a caller's `canvas_id` is not touched — so a call that
+  stages nothing (an inline fit, zero matches, an upstream error) holds no tenant canvas slot.
+  A page that overflows acquires the canvas (the caller's `canvas_id`, or a fresh mint) and
+  registers the whole page as `occurrences_<canvasId>`; the preview is the fitted prefix and
+  the next offset counts staged rows. If registration fails or is cancelled, the handler drops
+  the canvas it just minted (or the partial table on a caller's canvas) and rethrows.
+  *Decision:* decide-before-acquire rather than drop-on-exit — drop-on-exit still mints a
+  DuckDB instance per call and lets a burst of inline calls hit the tenant cap transiently.
+  `paleobiology_get_diversity` returns its full bin set inline (bounded).
 - **Canvas reuse replaces, never accumulates.** The staged table name is deterministic per
   canvas (`occurrences_<canvasId>`), and the framework's `registerTable` drops the table before
   recreating it. So passing a prior `canvas_id` back into `paleobiology_search_occurrences`
-  **overwrites** that canvas's occurrence table with the new result — each search restages the
+  **overwrites** that canvas's occurrence table with the new result when that page spills (a page
+  that fits inline leaves the canvas untouched) — each search restages the
   full set, it does not append across calls. The `canvas_id` `.describe()` states this so an
   agent doesn't expect the workspace to grow by re-querying.
 - **Truncation disclosure, driven by the real total.** Both list searches send `rowcount` and
@@ -496,8 +553,8 @@ a reconciliation surfaced as the `identified_name` vs `accepted_name` split.
   final page that happened to fill `limit`. Occurrences page on the same arithmetic and name
   the next offset (`Showing occurrences N–M of TOTAL. Advance offset to M for the next page.`)
   via `ctx.enrich.notice(...)`; the "raise limit" hint is appended only when `limit` — not the
-  server-wide cap — is the binding constraint and there is headroom below 500, so it can never
-  fire at the maximum. Both reach `structuredContent` and `content[]`, so neither client
+  server-wide cap or the inline budget — is the binding constraint and there is headroom below
+  500, so it can never fire at the maximum; a `limit` above 500 gets a line naming the cap instead. Both reach `structuredContent` and `content[]`, so neither client
   surface treats a slice as complete.
 - **An empty page past the end is a paging fault, not a filter fault.** Both list searches
   detect `offset >= records_found` on a zero-row page and say so (`Offset N is past the end of
@@ -517,6 +574,10 @@ a reconciliation surfaced as the `identified_name` vs `accepted_name` split.
   *instead of* a result, warnings *alongside* one), and the three list searches compose them
   into their `notice` enrichment. This is also what separates an unmatched taxon name from a
   valid query with zero overlap: both return zero rows, only the warning tells them apart.
+  When PBDB instead refuses the query (HTTP 400), the warnings lead the `pbdb_invalid_parameter`
+  message ahead of `errors[]`: an unknown interval is named only in the warning (`Unknown
+  interval 'Foobarian'`), and a lone unknown `lithology` leaves `errors[]` naming only
+  `all_records`, a parameter no tool exposes.
 - **`format()` parity.** Each tool's `format()` renders every output field as structured
   markdown (interval + Ma, modern + paleo coords, formation, accepted vs identified name) so
   `content[]`-only clients (Claude Desktop) see the same data as `structuredContent` clients
@@ -528,33 +589,49 @@ a reconciliation surfaced as the `identified_name` vs `accepted_name` split.
   missing paleo-coordinate is "unknown", not "0,0". Required-vs-optional in the output schema
   is set against this real sparsity (every geology/paleo field is optional).
 - **Provenance.** Each occurrence/collection row carries its `reference_no`; the response
-  enrichment carries the CC-BY attribution string. The agent can cite the source.
+  enrichment carries the CC-BY attribution string. The agent can cite the source, and
+  `paleobiology_get_references` resolves `reference_no` to the full citation.
+- **References resolve in batches, misses are results.** A page of 500 occurrence rows cites
+  ~200 distinct references, so a single-id tool would cost a call per reference; `refs/list`
+  answers many ids in one request. The tool resolves the first 25 distinct ids per call and
+  hands back the rest in `remaining_reference_nos` (25 keeps the measured worst-case payload
+  inside the response budget). `refs/list` silently omits unknown ids and returns hits in
+  author order, so the service rebuilds request order and diffs out `not_found` — an expected
+  miss on an id resolver is data, not an error, so the tool declares no `errors[]`. `citation`
+  is PBDB's own formatted string relayed verbatim; years and pages stay strings (`"viii"`).
 
 ---
 
 ## Error Contract
 
 The read tools mostly let the framework's auto-classification handle failures (a PBDB 5xx →
-`ServiceUnavailable`, a malformed bbox → `ValidationError`). Two domain failure modes warrant
+`ServiceUnavailable`, a malformed bbox → `ValidationError`). These domain failure modes warrant
 typed contract entries:
 
 | Tool | `reason` | code | when | recovery |
 |---|---|---|---|---|
 | `paleobiology_get_taxon` | `taxon_not_found` | `NotFound` | Name/`taxon_no` resolves to no PBDB taxon. | "If searching by name: check the spelling or try a higher rank (genus → family). If searching by taxon_no: re-run `paleobiology_get_taxon` by name to obtain a valid integer." |
+| `paleobiology_get_taxon` | `missing_selector` | `InvalidParams` | Neither `name` nor `taxon_no` was provided. | "Provide either a taxon name or a positive integer `taxon_no` to identify the taxon." |
+| `paleobiology_get_taxon` | `conflicting_selector` | `InvalidParams` | Both `name` and `taxon_no` were provided, whether or not they agree. | "Send `taxon_no` alone when the id is already resolved, or `name` alone when working from a name — drop the other and retry." |
+| `paleobiology://reference/{reference_no}` | `reference_not_found` | `NotFound` | No PBDB reference has the given `reference_no`. (The `paleobiology_get_references` tool reports misses in `not_found` instead.) | "Take a reference_no from a paleobiology_search_occurrences or paleobiology_search_collections row, then retry." |
 | `paleobiology_list_intervals` | `interval_not_found` | `NotFound` | A named interval is in neither the bundled international scale (after any `level`/Ma filters) nor a PBDB lookup across the other scales. | "Check the spelling, call `paleobiology_list_intervals` without a name to browse the international scale, or query by `min_ma`/`max_ma` instead." |
 | `paleobiology_list_intervals` | `interval_lookup_unavailable` | `ServiceUnavailable` | The name is outside the bundled scale and PBDB could not be reached to check the others. Retryable. | "Retry in a moment; meanwhile any international-scale name still resolves offline, as does a `min_ma`/`max_ma` query." |
+| `paleobiology_list_intervals` | `inverted_ma_range` | `InvalidParams` | `max_ma` is below `min_ma`. Equal bounds stay valid — a point in time. | "Set `max_ma` to the older bound and `min_ma` to the younger one, so `max_ma` is at least `min_ma`." |
 | `paleobiology_search_occurrences` / `_get_diversity` / `_search_collections` | `conflicting_taxon_filter` | `InvalidParams` | Both `base_name` and `base_id` were supplied. | "Send `base_id` alone when the taxon id is already resolved, or `base_name` alone when working from a name." |
 | `paleobiology_get_diversity` | `missing_filter` | `InvalidParams` | Neither `base_name` nor `base_id` was supplied. | "Provide a clade-inclusive `base_name`, or a `base_id` resolved with `paleobiology_get_taxon`." |
-| `paleobiology_dataframe_query` / `_describe` / `_drop` | `canvas_disabled` | `ServiceUnavailable` | `CANVAS_PROVIDER_TYPE` is not `duckdb`, so no canvas exists. | "Set `CANVAS_PROVIDER_TYPE=duckdb` (and install `@duckdb/node-api`) to enable SQL over staged results." |
+| `paleobiology_search_occurrences` / `_get_diversity` / `_search_collections` | `pbdb_invalid_parameter` | `InvalidParams` | PBDB refused a filter value it could not use (HTTP 400), e.g. an unknown interval. Thrown by the service; the message carries PBDB's `warnings[]` then `errors[]`. | "Correct the value PBDB named — confirm an interval with `paleobiology_list_intervals` or a taxon with `paleobiology_get_taxon` — or replace that filter with another one, then retry." |
+| `paleobiology_dataframe_query` / `_describe` / `_drop` | `canvas_disabled` | `ServiceUnavailable` | `CANVAS_PROVIDER_TYPE` is not `duckdb`, so no canvas exists. A defensive guard: with the canvas off these tools are not listed. | "Set `CANVAS_PROVIDER_TYPE=duckdb` (and install `@duckdb/node-api`) to enable SQL over staged results." |
+| `paleobiology_dataframe_drop` | `canvas_not_found` | `NotFound` | The `canvas_id` names no live canvas — it expired or was never issued. Re-raised from the canvas layer's own `canvas_not_found`, whose re-stage hint is wrong for a drop. | "The canvas has expired or never existed, so there is nothing left to drop. If you expected it to be live, check that the canvas_id was copied exactly." |
+| `paleobiology_search_occurrences` | `canvas_capacity_exhausted` | `RateLimited` | A spilling page with no `canvas_id` needs a new canvas, but the tenant canvas cap is reached. Retryable. Re-raised from the canvas layer's own `canvas_capacity_exhausted`, whose hint points at a canvas-drop tool this server does not have (`paleobiology_dataframe_drop` removes a table, never a canvas); the message names the `limit` that fits the page inline. | "Pass a canvas_id you already hold to restage this page onto that canvas, replacing its occurrence table, or lower limit so the page fits inline and stages nothing (the message names a limit that fits)." |
 
 (`paleobiology_dataframe_query` additionally surfaces the canvas layer's own `missing_table` /
 `invalid_sql` errors — re-stage the data or fix the named column, respectively — but those are
 raised by the framework's canvas primitive, not declared here.)
 
-Beyond the boundary guards above (plus each search's `missing_filter` / `incomplete_bbox` /
+Beyond the entries above (plus each search's `missing_filter` / `incomplete_bbox` /
 `inverted_ma_range`), the search tools declare no domain contract — an empty result is a valid
-empty list with an `enrichment` notice, not an error, and upstream failures are covered by
-baseline classification.
+empty list with an `enrichment` notice, not an error, and other upstream failures are covered
+by baseline classification.
 
 ---
 
@@ -575,7 +652,8 @@ baseline classification.
   the agent's.
 - **The bundled time scale lags ICS revisions** until the snapshot is regenerated. Document
   the snapshot's ICS version; refresh on ICS updates.
-- **Per-page cap.** A single occurrence pull caps at `PBDB_MAX_OCCURRENCES`; very large clades
+- **Per-page cap.** A single occurrence pull caps at 500 rows (fewer when `PBDB_MAX_OCCURRENCES`
+  is set lower) and its inline response at 100,000 bytes per surface; very large clades
   over long intervals exceed it in one call, and the response says which rows the page covers
   against `records_found` and which offset reaches the next. Page through with `limit`/`offset`,
   narrow the filter, or query the staged canvas. Collections page inline the same way under the
@@ -594,14 +672,15 @@ baseline classification.
 
 **Ships in v1**
 
-- 5 domain tools: `paleobiology_search_occurrences`, `paleobiology_get_taxon`,
+- 6 domain tools: `paleobiology_search_occurrences`, `paleobiology_get_taxon`,
   `paleobiology_get_diversity`, `paleobiology_list_intervals`,
-  `paleobiology_search_collections`.
-- The standardized 3-tool DataCanvas set: `paleobiology_dataframe_query` +
-  `paleobiology_dataframe_describe` (always registered) and `paleobiology_dataframe_drop`
-  (opt-in via `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED`, default off).
-- 2 resources: `paleobiology://occurrence/{occurrence_no}`,
-  `paleobiology://taxon/{taxon_no}`.
+  `paleobiology_search_collections`, `paleobiology_get_references`.
+- The standardized 3-tool DataCanvas set, listed only when DataCanvas is on:
+  `paleobiology_dataframe_query` + `paleobiology_dataframe_describe`, and
+  `paleobiology_dataframe_drop` (also opt-in via `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED`,
+  default off).
+- 3 resources: `paleobiology://occurrence/{occurrence_no}`,
+  `paleobiology://taxon/{taxon_no}`, `paleobiology://reference/{reference_no}`.
 - `vocab=pbdb` normalization; modern + paleo coords; named-interval ↔ Ma echoing; bundled ICS
   time-scale snapshot; CC-BY attribution; DataCanvas spill for `paleobiology_search_occurrences`
   only (diversity + collections return inline per the earns-its-keep gate); graceful
@@ -616,8 +695,8 @@ baseline classification.
   proves it's needed (PBDB is responsive today; not warranted yet).
 - Paleo-map image rendering / static-asset map tiles — out of scope; we return paleo-coords as
   numbers.
-- Specimen-level / measurement data, references/bibliography tools, and `/strata/list` as its
-  own tool (strata are surfaced inline on collections in v1) — additive later if demand
-  warrants.
+- Specimen-level / measurement data, query-driven bibliographies (`occs/refs`, `colls/refs`,
+  `taxa/refs`), and `/strata/list` as its own tool (strata are surfaced inline on
+  collections in v1) — additive later if demand warrants.
 - An optional `nameContains` MCP-side filter on intervals — the snapshot is small and
   `paleobiology_list_intervals` already filters by name/Ma/level; not needed in v1.
