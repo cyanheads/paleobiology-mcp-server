@@ -9,6 +9,8 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { blankAsUnset } from '@/mcp-server/tools/blank-as-unset.js';
+import { oneLine } from '@/mcp-server/tools/one-line.js';
 import {
   filterIntervals,
   getIntervalIndex,
@@ -30,9 +32,7 @@ const IntervalSchema = z
     level: z
       .string()
       .describe(
-        'Rank of the interval in its time scale. The international scale uses eon > era > ' +
-          'period > epoch > age (finest); other PBDB scales also use subepoch, subage, zone, ' +
-          'subzone, chron, subchron, and bin.',
+        'Rank of the interval in its time scale. The international scale uses eon > era > period > epoch > age (finest); other PBDB scales also use subepoch, subage, zone, subzone, chron, subchron, and bin.',
       ),
     max_ma: z.number().describe('Older (bottom) boundary in millions of years ago.'),
     min_ma: z.number().describe('Younger (top) boundary in millions of years ago.'),
@@ -50,9 +50,7 @@ const IntervalSchema = z
       .string()
       .optional()
       .describe(
-        'The PBDB time scale carrying this interval, e.g. "Mesozoic Subages" or "North ' +
-          'American Land Mammal Ages". Present only on an interval resolved upstream — every ' +
-          'bundled interval is on the international scale, which snapshot_version names.',
+        'The PBDB time scale carrying this interval, e.g. "Mesozoic Subages" or "North American Land Mammal Ages". Present only on an interval resolved upstream — every bundled interval is on the international scale, which snapshot_version names.',
       ),
   })
   .describe('A geologic time interval with its rank, Ma boundaries, and parent.');
@@ -60,26 +58,12 @@ const IntervalSchema = z
 export const listIntervalsTool = tool('paleobiology_list_intervals', {
   title: 'paleobiology-mcp-server: list geologic intervals',
   description:
-    'Look up the geologic time scale — eons, eras, periods, epochs, and ages with their ' +
-    'absolute-age boundaries in millions of years (Ma) and nesting. This is the reference that ' +
-    'grounds every temporal filter on the other tools and translates a named interval like ' +
-    '"Late Cretaceous" to its 100.5–66.0 Ma boundaries (and back). Filter by a name substring, ' +
-    'a Ma range (overlap match), and/or a level; call with no filters to browse the full scale. ' +
-    'Browsing and every name on the bundled ICS international-scale snapshot are answered ' +
-    'offline. A name the snapshot does not carry — the sub-stage and regional names that ' +
-    'occurrence and collection rows report, such as "Late Maastrichtian" or "Lancian" — costs ' +
-    'one PBDB lookup across its other time scales; the response names which source answered ' +
-    'and which scale the interval belongs to.',
+    'Look up the geologic time scale — eons, eras, periods, epochs, and ages with their absolute-age boundaries in millions of years (Ma) and nesting. This is the reference that grounds every temporal filter on the other tools and translates a named interval like "Late Cretaceous" to its 100.5–66.0 Ma boundaries (and back). Filter by a name substring, a Ma range (overlap match), and/or a level; call with no filters to browse the full scale. Browsing and every name on the bundled ICS international-scale snapshot are answered offline. A name the snapshot does not carry — the sub-stage and regional names that occurrence and collection rows report, such as "Late Maastrichtian" or "Lancian" — costs one PBDB lookup across its other time scales; the response names which source answered and which scale the interval belongs to.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    name: z
-      .string()
-      .optional()
-      .describe(
-        'Case-insensitive substring of the interval name, e.g. "cretaceous" or "Jurassic". ' +
-          'A name the bundled international scale does not carry is matched exactly against ' +
-          "PBDB's other time scales.",
-      ),
+    name: blankAsUnset(z.string().optional()).describe(
+      'Case-insensitive substring of the interval name, e.g. "cretaceous" or "Jurassic". A name the bundled international scale does not carry is matched exactly against PBDB\'s other time scales.',
+    ),
     min_ma: z
       .number()
       .nonnegative()
@@ -91,15 +75,12 @@ export const listIntervalsTool = tool('paleobiology_list_intervals', {
       .number()
       .nonnegative()
       .optional()
-      .describe('Older bound of an age window (Ma); intervals overlapping [min_ma, max_ma] match.'),
-    level: z
-      .enum(LEVELS)
-      .optional()
       .describe(
-        'Restrict to one rank of the international scale: eon, era, period, epoch, or age ' +
-          '(finest). Browsing is bounded to that scale, so the sub-stage and regional ranks ' +
-          'are not selectable here.',
+        'Older bound of an age window (Ma); intervals overlapping [min_ma, max_ma] match. When paired with min_ma it must be greater than or equal to it — equal bounds name a single point in time.',
       ),
+    level: blankAsUnset(z.enum(LEVELS).optional()).describe(
+      'Restrict to one rank of the international scale: eon, era, period, epoch, or age (finest). Browsing is bounded to that scale, so the sub-stage and regional ranks are not selectable here.',
+    ),
   }),
   output: z.object({
     intervals: z
@@ -108,8 +89,7 @@ export const listIntervalsTool = tool('paleobiology_list_intervals', {
     source: z
       .enum(SOURCES)
       .describe(
-        'Which source answered: "bundled_ics" for the offline international-scale snapshot, ' +
-          '"pbdb_upstream" for a name resolved live against PBDB\'s other time scales.',
+        'Which source answered: "bundled_ics" for the offline international-scale snapshot, "pbdb_upstream" for a name resolved live against PBDB\'s other time scales.',
       ),
     snapshot_version: z
       .string()
@@ -139,9 +119,23 @@ export const listIntervalsTool = tool('paleobiology_list_intervals', {
       recovery:
         'Retry in a moment; meanwhile any international-scale name still resolves offline, as does a min_ma/max_ma query.',
     },
+    {
+      reason: 'inverted_ma_range',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'max_ma was smaller than min_ma — the age window is inverted.',
+      recovery:
+        'Ages count backwards from the present: set max_ma to the older bound and min_ma to the younger one, so max_ma is at least min_ma (e.g. max_ma 100, min_ma 66).',
+    },
   ],
 
   async handler(input, ctx) {
+    if (input.max_ma != null && input.min_ma != null && input.max_ma < input.min_ma) {
+      throw ctx.fail(
+        'inverted_ma_range',
+        `max_ma (${input.max_ma}) must be greater than or equal to min_ma (${input.min_ma}).`,
+      );
+    }
+
     const index = getIntervalIndex();
     const filters: IntervalFilters = {};
     if (input.name) filters.name = input.name;
@@ -219,12 +213,15 @@ export const listIntervalsTool = tool('paleobiology_list_intervals', {
       '',
     ];
     for (const iv of result.intervals) {
-      const parts = [`**${iv.name}** (${iv.level})`, `${iv.max_ma}–${iv.min_ma} Ma`];
-      if (iv.abbrev) parts.push(`abbr ${iv.abbrev}`);
+      const parts = [
+        `**${oneLine(iv.name)}** (${oneLine(iv.level)})`,
+        `${iv.max_ma}–${iv.min_ma} Ma`,
+      ];
+      if (iv.abbrev) parts.push(`abbr ${oneLine(iv.abbrev)}`);
       parts.push(`int #${iv.interval_no}`);
       if (iv.parent_no != null) parts.push(`parent #${iv.parent_no}`);
-      if (iv.scale) parts.push(`scale ${iv.scale}`);
-      if (iv.color) parts.push(`color ${iv.color}`);
+      if (iv.scale) parts.push(`scale ${oneLine(iv.scale)}`);
+      if (iv.color) parts.push(`color ${oneLine(iv.color)}`);
       lines.push(`- ${parts.join(' · ')}`);
     }
     return [{ type: 'text', text: lines.join('\n') }];

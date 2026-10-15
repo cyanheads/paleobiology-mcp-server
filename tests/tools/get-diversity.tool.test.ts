@@ -5,15 +5,17 @@
  * regression (a zero-bin result must still return { bins: [] } that validates and
  * carries an actionable notice), the warning disclosure that separates an
  * unresolvable base_name from a clade with no data in the span, the filter →
- * service mapping, the inverted-Ma boundary guard (rejected before any PBDB
- * call), and format() parity for both populated and empty results.
+ * service mapping, blank form-client inputs read as unset, the inverted-Ma
+ * boundary guard (rejected before any PBDB call), the declared recovery for a
+ * filter PBDB rejected, and format() parity for both populated and empty results,
+ * with upstream line breaks flattened in content[].
  *
  * The PBDB layer is never hit: getPbdbService().getDiversity is a per-test fake.
  * @module tests/tools/get-diversity.tool
  */
 
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DiversityBin, DiversityFilter } from '@/services/pbdb/types.js';
 import { expectMcpError } from '../helpers/expect-error.js';
@@ -150,6 +152,85 @@ describe('paleobiology_get_diversity', () => {
     expect(getDiversity).not.toHaveBeenCalled();
   });
 
+  describe('blank optional inputs (#22)', () => {
+    it('reads a blank base_name as unset: missing_filter, no PBDB request', async () => {
+      const result = await runToolContract(getDiversityTool, { base_name: '' });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.InvalidParams,
+          data: {
+            reason: 'missing_filter',
+            recovery: {
+              hint: 'Provide a clade-inclusive base_name (e.g. "Dinosauria"), or a base_id resolved with paleobiology_get_taxon, then retry.',
+            },
+          },
+        },
+      });
+      expect(getDiversity).not.toHaveBeenCalled();
+    });
+
+    it('counts genera by period from base_id alone when every other field is blank', async () => {
+      getDiversity.mockResolvedValue({ bins: [cretaceousBin] });
+      const result = await runToolContract(getDiversityTool, {
+        base_name: '',
+        base_id: 38613,
+        count: '' as never,
+        resolution: '' as never,
+        interval: '  ',
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(getDiversity).toHaveBeenCalledWith(
+        { baseId: 38613, count: 'genera', resolution: 'period' },
+        expect.anything(),
+      );
+    });
+
+    it('still rejects an unknown count as invalid arguments', async () => {
+      const result = await runToolContract(getDiversityTool, {
+        base_name: 'Dinosauria',
+        count: 'bogus' as never,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.InvalidParams,
+          message: expect.stringContaining('count: Invalid option'),
+        },
+      });
+      expect(getDiversity).not.toHaveBeenCalled();
+    });
+  });
+
+  it('declares a recovery for a filter value PBDB rejected (#24)', async () => {
+    getDiversity.mockRejectedValue(
+      new McpError(
+        JsonRpcErrorCode.InvalidParams,
+        "PBDB rejected the getDiversity query: Unknown interval 'Foobarian'; No valid interval names were given.",
+        { operation: 'getDiversity', reason: 'pbdb_invalid_parameter' },
+      ),
+    );
+    const result = await runToolContract(getDiversityTool, {
+      base_name: 'Dinosauria',
+      interval: 'Foobarian',
+    });
+
+    expect(result.isError).toBe(true);
+    const error = (result.structuredContent as { error: { message: string; data: unknown } }).error;
+    expect(error.message).toBe(
+      "PBDB rejected the getDiversity query: Unknown interval 'Foobarian'; No valid interval names were given.",
+    );
+    expect(error.data).toMatchObject({
+      reason: 'pbdb_invalid_parameter',
+      recovery: {
+        hint: 'Correct the value PBDB named in the message — confirm an interval name with paleobiology_list_intervals or a taxon name with paleobiology_get_taxon — or replace that filter with another one (a max_ma/min_ma range for an interval, base_id for a taxon), then retry.',
+      },
+    });
+  });
+
   it('rejects base_name + base_id together at the boundary (#20)', async () => {
     const ctx = createMockContext({ errors: getDiversityTool.errors });
     const input = getDiversityTool.input.parse({ base_name: 'Ammonoidea', base_id: 52775 });
@@ -265,6 +346,20 @@ describe('paleobiology_get_diversity', () => {
     const out = getDiversityTool.output.parse({ bins: [] });
     const text = renderText(getDiversityTool.format?.(out));
     expect(text).toMatch(/No diversity bins/i);
+  });
+
+  it('keeps a line break in a PBDB bin name on its table row and verbatim in structuredContent (#33)', async () => {
+    const bin: DiversityBin = { ...cretaceousBin, interval: 'Late\r\nCretaceous\n### Forged' };
+    getDiversity.mockResolvedValue({ bins: [bin] });
+    const result = await runToolContract(getDiversityTool, { base_name: 'Dinosauria' });
+
+    expect((result.structuredContent as { bins: DiversityBin[] }).bins[0]).toStrictEqual(bin);
+    const text = renderText(result.content as { type: string; text?: string }[]);
+    expect(text).not.toContain('\r');
+    expect(text).not.toMatch(/^### Forged/m);
+    expect(text).toContain(
+      '| Late Cretaceous ### Forged | 143.1–66 | 1328 | 44 | 1276 | 1328 | 0 | 16198 |',
+    );
   });
 });
 

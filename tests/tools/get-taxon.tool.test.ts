@@ -1,11 +1,13 @@
 /**
  * @fileoverview Handler tests for paleobiology_get_taxon. Covers the happy path,
- * both declared error contracts (missing_selector, taxon_not_found), the
+ * the declared error contracts (missing_selector, conflicting_selector,
+ * taxon_not_found) with blank form-client selectors read as unset, the
  * upstream-4xx → clean-not-found reclassification (asserting NO statusCode /
  * requestId / responseBody leaks onto the agent-facing error), show_children,
  * sparse upstream payloads, the required-field fail-loud (a taxon missing
  * accepted_name or rank is rejected, not emitted), the CC BY attribution
- * enrichment, format() parity, and output-schema conformance.
+ * enrichment, format() parity with upstream line breaks flattened in content[],
+ * and output-schema conformance.
  *
  * The PBDB HTTP layer is never hit: getPbdbService() is mocked to a per-test
  * fake while isNotFoundError() (the real reclassification predicate) is kept
@@ -14,7 +16,7 @@
  */
 
 import { JsonRpcErrorCode, McpError, notFound } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Taxon } from '@/services/pbdb/types.js';
 import { expectMcpError } from '../helpers/expect-error.js';
@@ -230,6 +232,62 @@ describe('paleobiology_get_taxon', () => {
     expect(getTaxon).not.toHaveBeenCalled();
   });
 
+  // 38613 is Tyrannosaurus. PBDB answers any name + id pair with a 400 the service
+  // reads as not-found, so the pair is rejected whether or not the two agree.
+  it.each([
+    ['disagree', 'Triceratops'],
+    ['agree', 'Tyrannosaurus'],
+  ])(
+    'rejects name + taxon_no that %s with conflicting_selector, before any PBDB request (#22)',
+    async (_label, name) => {
+      const result = await runToolContract(getTaxonTool, { name, taxon_no: 38613 });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.InvalidParams,
+          message: `Got name "${name}" and taxon_no 38613 — provide one selector, not both.`,
+          data: {
+            reason: 'conflicting_selector',
+            recovery: {
+              hint: 'Send taxon_no alone when the id is already resolved, or name alone when working from a name — drop the other and retry.',
+            },
+          },
+        },
+      });
+      expect(getTaxon).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reads a whitespace-only name as unset: missing_selector, no PBDB request (#22)', async () => {
+    const result = await runToolContract(getTaxonTool, { name: '   ' });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.InvalidParams,
+        data: {
+          reason: 'missing_selector',
+          recovery: {
+            hint: 'Provide either a taxon name or a positive integer taxon_no to identify the taxon.',
+          },
+        },
+      },
+    });
+    expect(getTaxon).not.toHaveBeenCalled();
+  });
+
+  it('resolves by taxon_no when name arrives blank (#22)', async () => {
+    getTaxon.mockResolvedValue(fullTaxon());
+    const result = await runToolContract(getTaxonTool, { name: '', taxon_no: 38613 });
+
+    expect(result.isError).toBeFalsy();
+    expect(getTaxon).toHaveBeenCalledWith(
+      { taxonNo: 38613, showChildren: false },
+      expect.anything(),
+    );
+  });
+
   it('remaps a service not-found to the taxon_not_found contract reason', async () => {
     getTaxon.mockRejectedValue(notFound('No PBDB taxon matched the name "Notataxon".'));
     const ctx = createMockContext({ errors: getTaxonTool.errors });
@@ -340,6 +398,63 @@ describe('paleobiology_get_taxon', () => {
     expect(text).toContain('Campanian');
     expect(text).toContain('83.6–72.2 Ma');
     expect(text).toContain('extant:** no (extinct)');
+  });
+
+  it('keeps line breaks in PBDB text on their content[] line and verbatim in structuredContent (#33)', async () => {
+    const taxon: Taxon = {
+      taxon_no: 54833,
+      accepted_name: 'Tyrannosaurus\n### Forged',
+      rank: 'genus\r\n- forged',
+      parent_no: 92294,
+      parent_name: 'Tyrannosaurini\r',
+      classification: { class: 'Reptilia\n### Forged', family: 'Tyrannosauridae\r\n' },
+      extant: false,
+      range: {
+        first_appearance: { max_ma: 83.6, min_ma: 72.2, interval: 'Campanian\n> forged' },
+        last_appearance: { max_ma: 72.2, min_ma: 66, interval: 'Late\r\nMaastrichtian' },
+      },
+      children: [
+        {
+          taxon_no: 1,
+          name: 'Tarbosaurus\n### Forged',
+          rank: 'genus\n- forged',
+          synonym_of: 'Tyrannosaurus\r\nrex',
+        },
+      ],
+      children_offset: 0,
+      children_truncated: true,
+    };
+    getTaxon.mockResolvedValue(taxon);
+    const result = await runToolContract(getTaxonTool, { taxon_no: 54833, show_children: true });
+
+    expect(result.structuredContent).toMatchObject({
+      accepted_name: taxon.accepted_name,
+      rank: taxon.rank,
+      parent_name: taxon.parent_name,
+      classification: taxon.classification,
+      first_appearance: taxon.range.first_appearance,
+      last_appearance: taxon.range.last_appearance,
+      children: taxon.children,
+    });
+    const text = renderText(result.content as { type: string; text?: string }[]);
+    expect(text).not.toContain('\r');
+    expect(text).not.toMatch(/^(#+|-|>) ?[Ff]orged/m);
+    expect(text).toContain(
+      [
+        '## Tyrannosaurus ### Forged',
+        '**taxon_no:** 54833 | **rank:** genus - forged | **extant:** no (extinct)',
+        '**parent:** Tyrannosaurini (#92294)',
+        '**classification:** class: Reptilia ### Forged › family: Tyrannosauridae',
+        '**first appearance:** Campanian > forged (83.6–72.2 Ma)',
+        '**last appearance:** Late Maastrichtian (72.2–66 Ma)',
+        '',
+        '**children (1):**',
+        '- Tarbosaurus ### Forged (#1, genus - forged, synonym of Tyrannosaurus rex)',
+      ].join('\n'),
+    );
+    expect(text).toContain(
+      '> Showing immediate children 1–1 of Tyrannosaurus ### Forged; more remain.',
+    );
   });
 });
 

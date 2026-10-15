@@ -8,6 +8,8 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { blankAsUnset } from '@/mcp-server/tools/blank-as-unset.js';
+import { oneLine } from '@/mcp-server/tools/one-line.js';
 import { emitNotice, ignoredFilterNotice } from '@/mcp-server/tools/pbdb-notices.js';
 import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
 import type { DiversityFilter } from '@/services/pbdb/types.js';
@@ -43,22 +45,12 @@ const BinSchema = z
 export const getDiversityTool = tool('paleobiology_get_diversity', {
   title: 'paleobiology-mcp-server: diversity through time',
   description:
-    'Compute a diversity / origination / extinction curve for a clade across geologic time, binned ' +
-    'by period, epoch, or age — answers "plot dinosaur genus diversity across the Mesozoic." Pass a ' +
-    'clade-inclusive base_name (or base_id, the same clade by resolved taxon id — exactly one of the ' +
-    'two) and bound the span by a named interval (e.g. "Mesozoic") or a ' +
-    'max_ma/min_ma range; choose what to count (genera, species, or families) and the bin resolution. ' +
-    'The full bin set returns inline — a diversity series is a bounded set of geologic intervals — so ' +
-    'you read the curve, the turnover, and the per-bin origination/extinction directly. Counts reflect ' +
-    'SAMPLED diversity, biased by collection effort and rock availability, not true past diversity.',
+    'Compute a diversity / origination / extinction curve for a clade across geologic time, binned by period, epoch, or age — answers "plot dinosaur genus diversity across the Mesozoic." Pass a clade-inclusive base_name (or base_id, the same clade by resolved taxon id — exactly one of the two) and bound the span by a named interval (e.g. "Mesozoic") or a max_ma/min_ma range; choose what to count (genera, species, or families) and the bin resolution. The full bin set returns inline — a diversity series is a bounded set of geologic intervals — so you read the curve, the turnover, and the per-bin origination/extinction directly. Counts reflect SAMPLED diversity, biased by collection effort and rock availability, not true past diversity.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    base_name: z
-      .string()
-      .optional()
-      .describe(
-        'Clade-inclusive taxon to count, e.g. "Dinosauria" or "Ammonoidea" — this taxon and all descendants. Supply this or base_id (exactly one is required, never both).',
-      ),
+    base_name: blankAsUnset(z.string().optional()).describe(
+      'Clade-inclusive taxon to count, e.g. "Dinosauria" or "Ammonoidea" — this taxon and all descendants. Supply this or base_id (exactly one is required, never both).',
+    ),
     base_id: z
       .number()
       .int()
@@ -67,20 +59,15 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
       .describe(
         'Clade-inclusive taxon to count, by PBDB taxon id — the taxon_no from paleobiology_get_taxon, or accepted_no on an occurrence row. Same semantics as base_name, but unambiguous where a name is not (homonyms, synonyms, unresolved spellings). Supply this or base_name (exactly one is required, never both).',
       ),
-    count: z
-      .enum(COUNTS)
-      .default('genera')
-      .describe('What to count per bin: "genera" (default), "species", or "families".'),
-    resolution: z
-      .enum(RESOLUTIONS)
-      .default('period')
-      .describe('Bin resolution: "period" (default, coarse), "epoch", or "age" (finest).'),
-    interval: z
-      .string()
-      .optional()
-      .describe(
-        'Named geologic interval bounding the span, e.g. "Mesozoic". Alternative to max_ma/min_ma.',
-      ),
+    count: blankAsUnset(z.enum(COUNTS).default('genera')).describe(
+      'What to count per bin: "genera" (default), "species", or "families".',
+    ),
+    resolution: blankAsUnset(z.enum(RESOLUTIONS).default('period')).describe(
+      'Bin resolution: "period" (default, coarse), "epoch", or "age" (finest).',
+    ),
+    interval: blankAsUnset(z.string().optional()).describe(
+      'Named geologic interval bounding the span, e.g. "Mesozoic". Alternative to max_ma/min_ma.',
+    ),
     max_ma: z
       .number()
       .nonnegative()
@@ -137,6 +124,14 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
       when: 'min_ma was greater than or equal to max_ma — the span is inverted or empty.',
       recovery:
         'Ages count backwards from the present: set max_ma to the older bound and min_ma to the younger one, so min_ma is strictly less than max_ma (e.g. max_ma 252, min_ma 66).',
+    },
+    {
+      reason: 'pbdb_invalid_parameter',
+      code: JsonRpcErrorCode.InvalidParams,
+      thrownBy: 'service',
+      when: 'PBDB refused a filter value it could not use, such as an unknown interval name — the message quotes its reason.',
+      recovery:
+        'Correct the value PBDB named in the message — confirm an interval name with paleobiology_list_intervals or a taxon name with paleobiology_get_taxon — or replace that filter with another one (a max_ma/min_ma range for an interval, base_id for a taxon), then retry.',
     },
   ],
 
@@ -208,7 +203,7 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     const sep = '| --- | --- | --- | --- | --- | --- | --- | --- |';
     const rows = result.bins.map(
       (b) =>
-        `| ${b.interval} | ${b.max_ma}–${b.min_ma} | ${b.sampled_in_bin} | ${b.implied} | ${b.originations} | ${b.extinctions} | ${b.range_through} | ${b.n_occurrences} |`,
+        `| ${oneLine(b.interval)} | ${b.max_ma}–${b.min_ma} | ${b.sampled_in_bin} | ${b.implied} | ${b.originations} | ${b.extinctions} | ${b.range_through} | ${b.n_occurrences} |`,
     );
     return [
       {

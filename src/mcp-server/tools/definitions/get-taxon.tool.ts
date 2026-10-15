@@ -9,6 +9,8 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+import { blankAsUnset } from '@/mcp-server/tools/blank-as-unset.js';
+import { oneLine } from '@/mcp-server/tools/one-line.js';
 import {
   getPbdbService,
   isNotFoundError,
@@ -158,31 +160,19 @@ export function shapeTaxon(taxon: Taxon): TaxonOutput {
 export const getTaxonTool = tool('paleobiology_get_taxon', {
   title: 'paleobiology-mcp-server: get taxon record and fossil range',
   description:
-    'Resolve a taxon by name (e.g. "Tyrannosaurus") or by integer taxon_no to its accepted name, ' +
-    'rank, higher classification, immediate parent, fossil occurrence count, and first/last ' +
-    'appearance (FAD/LAD) range in millions of years — "when did this clade exist, and what is ' +
-    'it." Run this first to resolve a name into the accepted name and taxon_no, then pass that id as ' +
-    'base_id to paleobiology_search_occurrences, paleobiology_get_diversity, or ' +
-    'paleobiology_search_collections for a clade-inclusive filter that carries no name ambiguity (the ' +
-    'same id also appears as accepted_no on occurrence rows). Set show_children to also list ' +
-    'immediate child taxa. PBDB ' +
-    "taxonomy is opinionated and can differ from GBIF's backbone, so the accepted name may differ " +
-    'from the name you searched.',
+    'Resolve a taxon by name (e.g. "Tyrannosaurus") or by integer taxon_no to its accepted name, rank, higher classification, immediate parent, fossil occurrence count, and first/last appearance (FAD/LAD) range in millions of years — "when did this clade exist, and what is it." Run this first to resolve a name into the accepted name and taxon_no, then pass that id as base_id to paleobiology_search_occurrences, paleobiology_get_diversity, or paleobiology_search_collections for a clade-inclusive filter that carries no name ambiguity (the same id also appears as accepted_no on occurrence rows). Set show_children to also list immediate child taxa. PBDB taxonomy is opinionated and can differ from GBIF\'s backbone, so the accepted name may differ from the name you searched.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    name: z
-      .string()
-      .optional()
-      .describe(
-        'Taxon name to resolve, e.g. "Tyrannosaurus" or "Ammonoidea". Provide this or taxon_no.',
-      ),
+    name: blankAsUnset(z.string().optional()).describe(
+      'Taxon name to resolve, e.g. "Tyrannosaurus" or "Ammonoidea". Provide this or taxon_no.',
+    ),
     taxon_no: z
       .number()
       .int()
       .positive()
       .optional()
       .describe(
-        'PBDB taxon id from a prior get_taxon, or accepted_no on an occurrence row. Provide this or name.',
+        'PBDB taxon id from a prior get_taxon, or accepted_no on an occurrence row. Provide this or name, never both.',
       ),
     show_children: z
       .boolean()
@@ -229,11 +219,26 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
       when: 'Neither name nor taxon_no was provided.',
       recovery: 'Provide either a taxon name or a positive integer taxon_no to identify the taxon.',
     },
+    {
+      reason: 'conflicting_selector',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'Both name and taxon_no were provided — the lookup takes exactly one selector.',
+      recovery:
+        'Send taxon_no alone when the id is already resolved, or name alone when working from a name — drop the other and retry.',
+    },
   ],
 
   async handler(input, ctx) {
-    if (!input.name && input.taxon_no == null) {
+    if (input.name == null && input.taxon_no == null) {
       throw ctx.fail('missing_selector', 'Provide either a name or a taxon_no.');
+    }
+    // PBDB answers the pair with a 400 the service reads as not-found, so a
+    // contradictory pair would surface as "no such taxon" — reject it here.
+    if (input.name != null && input.taxon_no != null) {
+      throw ctx.fail(
+        'conflicting_selector',
+        `Got name "${input.name}" and taxon_no ${input.taxon_no} — provide one selector, not both.`,
+      );
     }
 
     const args: TaxonLookup = { showChildren: input.show_children };
@@ -276,12 +281,12 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
       const last = start + out.children.length;
       if (out.children_truncated) {
         ctx.enrich.notice(
-          `Showing immediate children ${start + 1}–${last} of ${out.accepted_name}; more remain. ` +
+          `Showing immediate children ${start + 1}–${last} of ${oneLine(out.accepted_name)}; more remain. ` +
             `Advance children_offset to ${last} for the next page.`,
         );
       } else if (out.children.length === 0 && start > 0) {
         ctx.enrich.notice(
-          `No immediate children at children_offset ${start} — the child list of ${out.accepted_name} ` +
+          `No immediate children at children_offset ${start} — the child list of ${oneLine(out.accepted_name)} ` +
             'ends before it. Lower children_offset (0 starts at the first child).',
         );
       }
@@ -291,17 +296,17 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
 
   format: (result) => {
     const lines: string[] = [];
-    lines.push(`## ${result.accepted_name}`);
+    lines.push(`## ${oneLine(result.accepted_name)}`);
     const meta = [
       `**taxon_no:** ${result.taxon_no}`,
-      `**rank:** ${result.rank}`,
+      `**rank:** ${oneLine(result.rank)}`,
       `**extant:** ${result.extant ? 'yes' : 'no (extinct)'}`,
     ];
     if (result.occurrence_count != null) meta.push(`**occurrences:** ${result.occurrence_count}`);
     lines.push(meta.join(' | '));
     if (result.parent_name || result.parent_no != null) {
       lines.push(
-        `**parent:** ${result.parent_name ?? ''}${result.parent_no != null ? ` (#${result.parent_no})` : ''}`.trim(),
+        `**parent:** ${oneLine(result.parent_name ?? '')}${result.parent_no != null ? ` (#${result.parent_no})` : ''}`.trim(),
       );
     }
 
@@ -315,10 +320,10 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
       lines.push('', `**children (${result.children.length}):**`);
       for (const c of result.children) {
         const tail: string[] = [`#${c.taxon_no}`];
-        if (c.rank) tail.push(c.rank);
+        if (c.rank) tail.push(oneLine(c.rank));
         if (c.occurrence_count != null) tail.push(`${c.occurrence_count} occ`);
-        if (c.synonym_of) tail.push(`synonym of ${c.synonym_of}`);
-        lines.push(`- ${c.name ?? `taxon #${c.taxon_no}`} (${tail.join(', ')})`);
+        if (c.synonym_of) tail.push(`synonym of ${oneLine(c.synonym_of)}`);
+        lines.push(`- ${oneLine(c.name ?? `taxon #${c.taxon_no}`)} (${tail.join(', ')})`);
       }
     }
     // Rendered whenever either field is set — not nested under the child list, so a
@@ -345,8 +350,10 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
 export function fmtClassification(cls: z.infer<typeof ClassificationSchema> | undefined): string {
   if (!cls) return '';
   return (['phylum', 'class', 'order', 'family', 'genus'] as const)
-    .filter((k) => cls[k])
-    .map((k) => `${k}: ${cls[k]}`)
+    .flatMap((k) => {
+      const name = cls[k];
+      return name ? [`${k}: ${oneLine(name)}`] : [];
+    })
     .join(' › ');
 }
 
@@ -357,5 +364,5 @@ function fmtWindow(w: {
   interval?: string | undefined;
 }): string {
   const ages = w.max_ma != null && w.min_ma != null ? `${w.max_ma}–${w.min_ma} Ma` : 'age unknown';
-  return w.interval ? `${w.interval} (${ages})` : ages;
+  return w.interval ? `${oneLine(w.interval)} (${ages})` : ages;
 }

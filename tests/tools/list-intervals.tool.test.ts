@@ -11,7 +11,7 @@
  */
 
 import { JsonRpcErrorCode, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initIntervalIndex } from '@/services/intervals/interval-index.js';
 import type { Interval } from '@/services/pbdb/types.js';
@@ -215,6 +215,62 @@ describe('paleobiology_list_intervals', () => {
     expect(lookupInterval).not.toHaveBeenCalled();
   });
 
+  it('rejects an inverted Ma window with inverted_ma_range (#22)', async () => {
+    const result = await runToolContract(listIntervalsTool, { max_ma: 66, min_ma: 100 });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.InvalidParams,
+        message: 'max_ma (66) must be greater than or equal to min_ma (100).',
+        data: {
+          reason: 'inverted_ma_range',
+          recovery: {
+            hint: 'Ages count backwards from the present: set max_ma to the older bound and min_ma to the younger one, so max_ma is at least min_ma (e.g. max_ma 100, min_ma 66).',
+          },
+        },
+      },
+    });
+    expect(lookupInterval).not.toHaveBeenCalled();
+  });
+
+  it('reads equal Ma bounds on a boundary as a point both neighbouring intervals touch (#22)', async () => {
+    const result = await runToolContract(listIntervalsTool, { max_ma: 66, min_ma: 66 });
+
+    expect(result.isError).toBeFalsy();
+    const names = (result.structuredContent as { intervals: Interval[] }).intervals.map(
+      (iv) => iv.name,
+    );
+    expect(names).toContain('Maastrichtian');
+    expect(names).toContain('Danian');
+  });
+
+  it('reads a blank name as unset: an empty Ma/level match is a list with a notice (#22)', async () => {
+    const result = await runToolContract(listIntervalsTool, {
+      name: '',
+      min_ma: 4600,
+      max_ma: 4700,
+      level: 'eon',
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      intervals: [],
+      totalCount: 0,
+      notice: 'No interval matched the Ma/level filters. Widen the range or drop the level filter.',
+    });
+    expect(lookupInterval).not.toHaveBeenCalled();
+  });
+
+  it('browses every level when level and name arrive blank (#22)', async () => {
+    const all = await runToolContract(listIntervalsTool, {});
+    const blank = await runToolContract(listIntervalsTool, { name: '  ', level: '' as never });
+
+    expect(blank.isError).toBeFalsy();
+    expect(blank.structuredContent).toStrictEqual(all.structuredContent);
+    expect(lookupInterval).not.toHaveBeenCalled();
+  });
+
   it('restricts results to a single level when level is given', async () => {
     const ctx = createMockContext({ errors: listIntervalsTool.errors });
     const input = listIntervalsTool.input.parse({ level: 'period' });
@@ -269,6 +325,29 @@ describe('paleobiology_list_intervals', () => {
     expect(text).toContain('Cretaceous');
     expect(text).toContain('Ma');
     expect(text).toContain('bundled_ics');
+  });
+
+  it('keeps line breaks in an upstream interval on its list item and verbatim in structuredContent (#33)', async () => {
+    const upstream: Interval = {
+      ...lateMaastrichtian(),
+      name: 'Late Maastrichtian\n### Forged',
+      level: 'subage\r\n- forged',
+      abbrev: 'uMa\r',
+      scale: 'Mesozoic\nSubages',
+      color: '#F2FA8C\n> forged',
+    };
+    lookupInterval.mockResolvedValue(upstream);
+    const result = await runToolContract(listIntervalsTool, { name: 'Late Maastrichtian' });
+
+    expect((result.structuredContent as { intervals: Interval[] }).intervals[0]).toStrictEqual(
+      upstream,
+    );
+    const text = renderText(result.content as { type: string; text?: string }[]);
+    expect(text).not.toContain('\r');
+    expect(text).not.toMatch(/^(#+|-|>) ?[Ff]orged/m);
+    expect(text).toContain(
+      '- **Late Maastrichtian ### Forged** (subage - forged) · 72.2–66 Ma · abbr uMa · int #654 · scale Mesozoic Subages · color #F2FA8C > forged',
+    );
   });
 });
 
