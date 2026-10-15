@@ -15,10 +15,7 @@ export const occurrenceResource = resource('paleobiology://occurrence/{occurrenc
   name: 'Fossil occurrence',
   title: 'paleobiology-mcp-server: fossil occurrence',
   description:
-    'Read one fossil occurrence by its integer occurrence_no (obtained from paleobiology_search_occurrences ' +
-    'output rows). Returns the accepted and identified names, age as both a named interval and a Ma range, ' +
-    'modern and paleo coordinates distinctly, formation/strata, locality, and an attribution field ' +
-    'carrying the CC BY 4.0 source credit.',
+    'Read one fossil occurrence by its integer occurrence_no (obtained from paleobiology_search_occurrences output rows). Returns the accepted and identified names, age as both a named interval and a Ma range, modern and paleo coordinates distinctly, formation/strata, locality, and an attribution field carrying the CC BY 4.0 source credit.',
   mimeType: 'application/json',
   params: z.object({
     occurrence_no: z

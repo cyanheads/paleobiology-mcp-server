@@ -4,6 +4,7 @@
  */
 
 import { occurrenceResource } from './occurrence.resource.js';
+import { referenceResource } from './reference.resource.js';
 import { taxonResource } from './taxon.resource.js';
 
-export const allResourceDefinitions = [occurrenceResource, taxonResource];
+export const allResourceDefinitions = [occurrenceResource, taxonResource, referenceResource];

@@ -17,10 +17,7 @@ export const taxonResource = resource('paleobiology://taxon/{taxon_no}', {
   name: 'Taxon record',
   title: 'paleobiology-mcp-server: taxon record',
   description:
-    'Read one taxon by its integer taxon_no (from paleobiology_get_taxon, or accepted_no on an occurrence ' +
-    'row). Returns the accepted name, rank, higher classification, immediate parent, fossil occurrence ' +
-    'count, first/last appearance (FAD/LAD) range in millions of years, and an attribution field ' +
-    'carrying the CC BY 4.0 source credit.',
+    'Read one taxon by its integer taxon_no (from paleobiology_get_taxon, or accepted_no on an occurrence row). Returns the accepted name, rank, higher classification, immediate parent, fossil occurrence count, first/last appearance (FAD/LAD) range in millions of years, and an attribution field carrying the CC BY 4.0 source credit.',
   mimeType: 'application/json',
   params: z.object({
     taxon_no: z
