@@ -29,7 +29,7 @@
 
 ## Overview
 
-Fossil biodiversity over the Paleobiology Database (PBDB), spanning roughly 540 million years. Resolve taxon fossil ranges, search fossil occurrences and collections by taxon, geologic time, and location, and plot diversity through deep time from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+Fossil biodiversity over the Paleobiology Database (PBDB), spanning roughly 540 million years. Resolve taxon fossil ranges, search fossil occurrences and collections by taxon, geologic time, and location, and plot diversity through deep time.
 
 ### Tools
 
@@ -61,9 +61,9 @@ All resource data is also reachable via tools — the resources mirror a single-
 
 ### `paleobiology_search_occurrences` <sub>tool</sub>
 
-- Requires at least one taxon, time, geographic, environment, or `collection_no` filter. Use `base_name` or `base_id` for a clade, `taxon_name` for an exact match; page with `limit` (default 100; up to 500 served per call, 501–10,000 served at 500) and `offset`. Each response surface stays within 100,000 bytes, cut at a whole row; the notice names the offset that continues
-- Returns modern and paleo coordinates, named intervals and Ma ages, strata, and higher classification. `totalCount` and the notice report PBDB's true match count and next offset; rejected filters carry `missing_filter`, `conflicting_taxon_filter`, `incomplete_bbox`, or `inverted_ma_range`, and a value PBDB cannot use (an unknown interval) carries `pbdb_invalid_parameter` with PBDB's reason
-- With DataCanvas on, pages that outgrow the inline budget spill whole to a canvas and return `canvas_id` + `table_name` for `paleobiology_dataframe_describe`, then SQL. Reusing a `canvas_id` replaces that canvas's occurrence table; a page that fits inline stages nothing, creates no canvas, and leaves a passed `canvas_id` untouched. A spill that needs a new canvas when the canvas cap is reached fails with retryable `canvas_capacity_exhausted`: pass a `canvas_id` already held, or lower `limit` to the value the message names so the page fits inline. Without DataCanvas, an overflowing page is cut and the notice names the next offset
+- Requires at least one taxon, time, geographic, environment, or `collection_no` filter. Use `base_name` or `base_id` for a clade, `taxon_name` for an exact match; page with `limit` (default 100, max 500 per call) and `offset`. Responses stay within 100,000 bytes, and the notice names the offset that continues
+- Returns modern and paleo coordinates, named intervals and Ma ages, strata, and higher classification, with `totalCount` for PBDB's true match count. Errors: `missing_filter`, `conflicting_taxon_filter`, `incomplete_bbox`, `inverted_ma_range`, and `pbdb_invalid_parameter` (with PBDB's reason) for a value PBDB cannot use
+- With DataCanvas on, a page too large to inline is staged on a canvas and returns `canvas_id` + `table_name` for `paleobiology_dataframe_describe`, then SQL. If the canvas cap is reached, it fails with retryable `canvas_capacity_exhausted`: pass an existing `canvas_id` or lower `limit` to the value the message names. Without DataCanvas, an overflowing page is cut
 
 ---
 
@@ -93,8 +93,8 @@ All resource data is also reachable via tools — the resources mirror a single-
 
 ### `paleobiology_search_collections` <sub>tool</sub>
 
-- Requires at least one taxon, time, geographic, `formation`, `lithology`, or `environment` filter. Page with `limit` (default 100; up to 500 served per call, 501–10,000 served at 500) and `offset`. Each response surface stays within 100,000 bytes, cut at a whole row; the notice names the offset that continues
-- Returns locality coordinates, age, strata, lithology, environment, and `n_occs`, with totals and truncation guidance. Pass `collection_no` to `paleobiology_search_occurrences` for the fauna at that locality
+- Requires at least one taxon, time, geographic, `formation`, `lithology`, or `environment` filter. Page with `limit` (default 100, max 500 per call) and `offset`. Responses stay within 100,000 bytes, and the notice names the offset that continues
+- Returns locality coordinates, age, strata, lithology, environment, and `n_occs`, with totals. Pass `collection_no` to `paleobiology_search_occurrences` for the fauna at that locality
 - Typed errors: `missing_filter`, `conflicting_taxon_filter`, `incomplete_bbox`, `inverted_ma_range`, `pbdb_invalid_parameter` for a value PBDB cannot use (an unknown interval, or an unknown lithology sent as the only filter)
 
 ---
@@ -109,25 +109,25 @@ All resource data is also reachable via tools — the resources mirror a single-
 
 ### `paleobiology_dataframe_query` <sub>tool</sub>
 
-- Runs a read-only SQL `SELECT` against occurrence sets staged on a DataCanvas by `paleobiology_search_occurrences`; writes and file-reading functions are rejected
-- Reference tables by the `table_name` a spilled search returned; the `classification` column is JSON — roll up by rank with `json_extract_string(classification, '$.family')` (also `$.phylum`, `$.class`, `$.order`, `$.genus`)
-- Rows are cut at a whole row to keep each response surface within 100,000 bytes; the notice names the rows shown and the `ORDER BY … LIMIT/OFFSET` that reads the rest. `row_count` counts up to the canvas row cap; `truncated: true` means counting stopped there
-- Listed only when DataCanvas is on (`CANVAS_PROVIDER_TYPE=duckdb`); otherwise absent from `tools/list`, with its enable hint on the HTTP landing page
+- Runs a read-only SQL `SELECT` against occurrence sets staged by `paleobiology_search_occurrences`, using the `table_name` it returned; writes and file-reading functions are rejected
+- The `classification` column is JSON — roll up by rank with `json_extract_string(classification, '$.family')` (also `$.phylum`, `$.class`, `$.order`, `$.genus`)
+- Responses stay within 100,000 bytes; the notice names the `ORDER BY … LIMIT/OFFSET` that reads the rest. `truncated: true` means `row_count` stopped at the canvas row cap
+- Listed only when DataCanvas is on (`CANVAS_PROVIDER_TYPE=duckdb`)
 
 ---
 
 ### `paleobiology_dataframe_describe` <sub>tool</sub>
 
 - Lists the tables staged on a canvas, each with its row count and column names/types/nullability — call before `paleobiology_dataframe_query` to discover identifiers
-- Listed only when DataCanvas is on (`CANVAS_PROVIDER_TYPE=duckdb`); otherwise absent from `tools/list`, with its enable hint on the HTTP landing page
+- Listed only when DataCanvas is on (`CANVAS_PROVIDER_TYPE=duckdb`)
 
 ---
 
 ### `paleobiology_dataframe_drop` <sub>tool</sub>
 
 - Drops one staged table by `canvas_id` + `table_name` to free memory before its TTL expires; dropping a nonexistent table returns `dropped: false`, not an error
-- Opt-in — callable only when DataCanvas is on and `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true`; absent from `tools/list` otherwise, with its enable hint on the HTTP landing page
-- Typed error: `canvas_not_found` when the canvas has expired or never existed — there is nothing left to drop
+- Opt-in — needs DataCanvas on and `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED=true`
+- Typed error: `canvas_not_found` when the canvas has expired or never existed
 
 ---
 
@@ -165,13 +165,14 @@ PBDB-specific:
 - Bundled ICS geologic time-scale snapshot — `paleobiology_list_intervals` resolves the international scale's named intervals ↔ absolute Ma boundaries with no network call, falling back to a PBDB lookup for sub-stage and regional names
 - Optional DataCanvas spill for broad occurrence queries (`CANVAS_PROVIDER_TYPE=duckdb`): an inline preview plus a staged table queryable with read-only SQL (count by interval, group by formation/country, roll up by family from the `classification` JSON column)
 - No auth, no API key — PBDB is fully open (`MCP_AUTH_MODE` defaults to `none`)
-- PBDB's accepted taxonomy may differ from the searched name or other backbones. Diversity counts reflect sampling and collection effort, rather than true past diversity
+- Diversity counts reflect sampling and collection effort, not true past diversity
 
 Agent-friendly output:
 
 - Two coordinate systems on every occurrence — modern lng/lat and paleo lng/lat, distinctly labeled, so an agent never plots a deep-time fossil on a modern coastline
 - Both temporal representations on every age — the named interval **and** its Ma boundaries
-- Provenance and honesty — every row carries its `reference_no` (resolved to a citation by `paleobiology_get_references`), every PBDB-backed tool and resource carries the CC BY attribution, sparse upstream fields (paleo-coords, formation, `late_interval`) are omitted rather than zeroed, and diversity counts are flagged as sampled
+- Provenance on every row: `reference_no` for `paleobiology_get_references`, plus CC BY attribution on tools and resources
+- Sparse upstream fields (paleo-coords, formation, `late_interval`) are omitted rather than zeroed
 
 ---
 
@@ -299,12 +300,12 @@ All variables are optional — the server runs with no configuration against the
 |:---------|:------------|:--------|
 | `PBDB_BASE_URL` | Paleobiology Database API base. Override for a mirror/proxy or pinned API version. | `https://paleobiodb.org/data1.2` |
 | `PBDB_TIMEOUT_MS` | Per-request timeout in milliseconds. Diversity queries over large clades can be slow. | `30000` |
-| `PBDB_MAX_OCCURRENCES` | Hard cap on rows pulled per occurrence/collection call. The tools pull at most 500 per call, so only a lower value takes effect. | `1000` |
+| `PBDB_MAX_OCCURRENCES` | Cap on rows pulled per occurrence/collection call (tools pull at most 500, so only a lower value matters). | `1000` |
 | `CANVAS_PROVIDER_TYPE` | Set to `duckdb` to enable the DataCanvas spill path and list the `paleobiology_dataframe_*` tools. | `none` |
-| `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED` | Enable `paleobiology_dataframe_drop` (DataCanvas must also be on). Absent from `tools/list` when unset; the HTTP landing page keeps its enable hint. | `false` |
+| `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED` | Enable `paleobiology_dataframe_drop` (DataCanvas must also be on). | `false` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | Port for HTTP server. | `3010` |
-| `MCP_SESSION_MODE` | HTTP session posture: `stateless`, `stateful`, or `auto`. The server declares `stateless` in `src/index.ts` — it holds no per-session state — and this variable overrides that declaration. | `stateless` |
+| `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`. | `stateless` |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (RFC 5424). | `info` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry instrumentation](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry) (spans, metrics, completion logs). | `false` |
