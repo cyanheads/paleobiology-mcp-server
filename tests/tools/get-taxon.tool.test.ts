@@ -34,6 +34,9 @@ const { getTaxonTool } = await import('@/mcp-server/tools/definitions/get-taxon.
 function fullTaxon(): Taxon {
   return {
     taxon_no: 54833,
+    name: 'Tyrannosaurus',
+    accepted_no: 54833,
+    accepted_rank: 'genus',
     accepted_name: 'Tyrannosaurus',
     rank: 'genus',
     parent_no: 92294,
@@ -113,6 +116,7 @@ describe('paleobiology_get_taxon', () => {
     // read as the complete list on either output surface.
     const big = fullTaxon();
     big.accepted_name = 'Turritella';
+    big.name = 'Turritella';
     big.children = childPage(200, 0);
     big.children_offset = 0;
     big.children_truncated = true;
@@ -154,6 +158,30 @@ describe('paleobiology_get_taxon', () => {
       '**children page:** children_offset 0, through child 3 — children_truncated: no, this page reaches the end of the child list.',
     );
   });
+
+  it.each([true, false])(
+    'names the matched taxon in child paging notices (truncated %s)',
+    async (truncated) => {
+      const taxon = fullTaxon();
+      taxon.name = 'Matched name';
+      taxon.accepted_name = 'Accepted name';
+      taxon.children = truncated ? childPage(1, 0) : [];
+      taxon.children_offset = truncated ? 0 : 400;
+      taxon.children_truncated = truncated;
+      getTaxon.mockResolvedValue(taxon);
+      const result = await runToolContract(getTaxonTool, {
+        taxon_no: taxon.taxon_no,
+        show_children: true,
+        children_offset: taxon.children_offset,
+      });
+      expect(result.structuredContent).toMatchObject({
+        notice: expect.stringContaining('of Matched name'),
+      });
+      const text = renderText(result.content as { type: string; text?: string }[]);
+      expect(text).toContain('of Matched name');
+      expect(text).not.toContain('of Accepted name');
+    },
+  );
 
   it('threads children_offset to the service and reports the second page (#15)', async () => {
     const page2 = fullTaxon();
@@ -335,12 +363,16 @@ describe('paleobiology_get_taxon', () => {
     const input = getTaxonTool.input.parse({ name: 'Tyrannosaurus' });
     await expect(getTaxonTool.handler(input, ctx)).rejects.toMatchObject({
       code: JsonRpcErrorCode.ServiceUnavailable,
+      message: 'PBDB is down.',
     });
   });
 
   it('tolerates a sparse extant taxon — empty appearance windows, no fabricated counts', async () => {
     const sparse: Taxon = {
       taxon_no: 36651,
+      name: 'Homo',
+      accepted_no: 36651,
+      accepted_rank: 'genus',
       accepted_name: 'Homo',
       rank: 'genus',
       classification: {},
@@ -377,12 +409,17 @@ describe('paleobiology_get_taxon', () => {
     const input = getTaxonTool.input.parse({ taxon_no: 54833 });
     await expect(getTaxonTool.handler(input, ctx)).rejects.toMatchObject({
       code: JsonRpcErrorCode.ServiceUnavailable,
+      message:
+        'PBDB returned taxon 54833 without complete matched and accepted identities or ranks.',
     });
   });
 
   it('format() renders ids, classification, and FAD/LAD windows', () => {
     const out = getTaxonTool.output.parse({
       taxon_no: 54833,
+      name: 'Tyrannosaurus',
+      accepted_no: 54833,
+      accepted_rank: 'genus',
       accepted_name: 'Tyrannosaurus',
       rank: 'genus',
       classification: { class: 'Reptilia', family: 'Tyrannosauridae' },
@@ -403,6 +440,9 @@ describe('paleobiology_get_taxon', () => {
   it('keeps line breaks in PBDB text on their content[] line and verbatim in structuredContent (#33)', async () => {
     const taxon: Taxon = {
       taxon_no: 54833,
+      name: 'Tyrannosaurus\n### Forged',
+      accepted_no: 54833,
+      accepted_rank: 'genus',
       accepted_name: 'Tyrannosaurus\n### Forged',
       rank: 'genus\r\n- forged',
       parent_no: 92294,
@@ -435,6 +475,7 @@ describe('paleobiology_get_taxon', () => {
       first_appearance: taxon.range.first_appearance,
       last_appearance: taxon.range.last_appearance,
       children: taxon.children,
+      notice: expect.stringContaining('Tyrannosaurus\n### Forged'),
     });
     const text = renderText(result.content as { type: string; text?: string }[]);
     expect(text).not.toContain('\r');
@@ -443,6 +484,7 @@ describe('paleobiology_get_taxon', () => {
       [
         '## Tyrannosaurus ### Forged',
         '**taxon_no:** 54833 | **rank:** genus - forged | **extant:** no (extinct)',
+        '**accepted:** Tyrannosaurus ### Forged (#54833, genus)',
         '**parent:** Tyrannosaurini (#92294)',
         '**classification:** class: Reptilia ### Forged › family: Tyrannosauridae',
         '**first appearance:** Campanian > forged (83.6–72.2 Ma)',
@@ -453,7 +495,7 @@ describe('paleobiology_get_taxon', () => {
       ].join('\n'),
     );
     expect(text).toContain(
-      '> Showing immediate children 1–1 of Tyrannosaurus ### Forged; more remain.',
+      '> Showing immediate children 1–1 of Tyrannosaurus\n> ### Forged; more remain.',
     );
   });
 });

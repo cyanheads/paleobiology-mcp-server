@@ -69,14 +69,14 @@ export const listIntervalsTool = tool('paleobiology_list_intervals', {
       .nonnegative()
       .optional()
       .describe(
-        'Younger bound of an age window (Ma); intervals overlapping [min_ma, max_ma] match.',
+        'Younger bound of an age window (Ma); intervals must overlap by more than a boundary point, including when only one bound is supplied. Equal min_ma and max_ma select all intervals containing that point, including their boundaries.',
       ),
     max_ma: z
       .number()
       .nonnegative()
       .optional()
       .describe(
-        'Older bound of an age window (Ma); intervals overlapping [min_ma, max_ma] match. When paired with min_ma it must be greater than or equal to it — equal bounds name a single point in time.',
+        'Older bound of an age window (Ma); intervals must overlap by more than a boundary point, including when only one bound is supplied. Must be at least min_ma when both are supplied; equal bounds include all intervals containing that point, including their boundaries.',
       ),
     level: blankAsUnset(z.enum(LEVELS).optional()).describe(
       'Restrict to one rank of the international scale: eon, era, period, epoch, or age (finest). Browsing is bounded to that scale, so the sub-stage and regional ranks are not selectable here.',

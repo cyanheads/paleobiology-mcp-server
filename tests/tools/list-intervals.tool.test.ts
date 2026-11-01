@@ -55,6 +55,69 @@ beforeEach(() => {
 });
 
 describe('paleobiology_list_intervals', () => {
+  it('returns only positive-duration overlapping stages on both surfaces (#43)', async () => {
+    const result = await runToolContract(listIntervalsTool, {
+      min_ma: 66,
+      max_ma: 100.5,
+      level: 'age',
+    });
+    expect(result.isError).toBeFalsy();
+    expect(
+      (result.structuredContent as { intervals: Interval[] }).intervals.map((iv) => iv.name),
+    ).toEqual(['Cenomanian', 'Turonian', 'Coniacian', 'Santonian', 'Campanian', 'Maastrichtian']);
+    const text = renderText(result.content as { type: string; text?: string }[]);
+    expect(text).toContain('**Cenomanian**');
+    expect(text).toContain('**Maastrichtian**');
+    expect(text).not.toContain('**Albian**');
+    expect(text).not.toContain('**Danian**');
+    expect(lookupInterval).not.toHaveBeenCalled();
+  });
+
+  it('excludes a boundary-only upstream hit but preserves an explicit point (#43)', async () => {
+    lookupInterval.mockResolvedValue(lateMaastrichtian());
+    const excluded = await runToolContract(listIntervalsTool, {
+      name: 'Late Maastrichtian',
+      min_ma: 60,
+      max_ma: 66,
+    });
+    expect(excluded.isError).toBe(true);
+    expect(excluded.structuredContent).toMatchObject({
+      error: {
+        data: {
+          reason: 'interval_not_found',
+          recovery: { hint: expect.stringContaining('Check the spelling') },
+        },
+      },
+    });
+    expect(renderText(excluded.content as { type: string; text?: string }[])).toContain(
+      'Check the spelling',
+    );
+    const point = await runToolContract(listIntervalsTool, {
+      name: 'Late Maastrichtian',
+      min_ma: 66,
+      max_ma: 66,
+    });
+    expect(point.structuredContent).toMatchObject({
+      source: 'pbdb_upstream',
+      intervals: [{ name: 'Late Maastrichtian' }],
+    });
+    expect(renderText(point.content as { type: string; text?: string }[])).toContain(
+      '**Late Maastrichtian**',
+    );
+  });
+
+  it('does not fall back for a bundled name excluded by boundary contact (#43)', async () => {
+    const result = await runToolContract(listIntervalsTool, {
+      name: 'Maastrichtian',
+      min_ma: 60,
+      max_ma: 66,
+    });
+    expect(result.structuredContent).toMatchObject({
+      error: { data: { reason: 'interval_not_found' } },
+    });
+    expect(lookupInterval).not.toHaveBeenCalled();
+  });
+
   it('translates a named interval to its Ma boundaries with NO upstream call', async () => {
     const ctx = createMockContext({ errors: listIntervalsTool.errors });
     const input = listIntervalsTool.input.parse({ name: 'Maastrichtian' });

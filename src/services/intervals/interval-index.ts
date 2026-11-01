@@ -33,21 +33,23 @@ export interface IntervalFilters {
 
 /**
  * Apply the list tool's filters to any interval set, sorted oldest-first. All
- * filters are ANDed; substring match on `name`, inclusive Ma overlap for the
- * range, exact `level`.
+ * filters are ANDed; substring match on `name`, positive-duration Ma overlap for
+ * windows (inclusive containment for explicit points), exact `level`.
  *
  * Module-level rather than a method so the same predicate and ordering apply to
  * an interval resolved upstream, which never enters the bundled index.
  */
 export function filterIntervals(intervals: readonly Interval[], opts: IntervalFilters): Interval[] {
   const needle = opts.name ? norm(opts.name) : undefined;
+  const isPoint = opts.minMa != null && opts.minMa === opts.maxMa;
   return intervals
     .filter((iv) => {
       if (needle && !norm(iv.name).includes(needle)) return false;
       if (opts.level && iv.level !== opts.level) return false;
-      // Overlap test against [minMa, maxMa] when either bound is supplied.
-      if (opts.minMa != null && iv.max_ma < opts.minMa) return false;
-      if (opts.maxMa != null && iv.min_ma > opts.maxMa) return false;
+      if (opts.minMa != null && (isPoint ? iv.max_ma < opts.minMa : iv.max_ma <= opts.minMa))
+        return false;
+      if (opts.maxMa != null && (isPoint ? iv.min_ma > opts.maxMa : iv.min_ma >= opts.maxMa))
+        return false;
       return true;
     })
     .sort(oldestFirst);

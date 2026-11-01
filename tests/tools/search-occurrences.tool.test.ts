@@ -10,7 +10,7 @@
  * guards (lngmin/lngmax both-or-neither, min_ma strictly below max_ma, both
  * rejected before any PBDB call), the environment-enum → filter mapping,
  * format() parity (modern vs paleo coords, classification), sparse rows, blank
- * optional inputs, canvas-slot handling, and the inline response budget.
+ * optional inputs, canvas-slot handling, and complete inline page delivery.
  *
  * Neither PBDB nor DuckDB is hit: getPbdbService().searchOccurrences resolves
  * `{ rows, meta }` over fake rows, and getCanvas() returns a fake DataCanvas whose
@@ -26,11 +26,12 @@ import { expectMcpError } from '../helpers/expect-error.js';
 import { surfaceBytes } from '../helpers/surface-bytes.js';
 
 const searchOccurrences = vi.fn();
+const searchOccurrenceSet = vi.fn();
 const getCanvas = vi.fn();
 
 vi.mock('@/services/pbdb/pbdb-service.js', async (importActual) => {
   const actual = await importActual<typeof import('@/services/pbdb/pbdb-service.js')>();
-  return { ...actual, getPbdbService: () => ({ searchOccurrences }) };
+  return { ...actual, getPbdbService: () => ({ searchOccurrences, searchOccurrenceSet }) };
 });
 vi.mock('@/services/canvas-accessor.js', () => ({ getCanvas, setCanvas: () => {} }));
 
@@ -45,6 +46,7 @@ const { searchOccurrencesTool } = await import(
  */
 function stubRows(rows: Occurrence[], meta: PbdbSearchMeta = {}): void {
   searchOccurrences.mockResolvedValue({ rows, meta });
+  searchOccurrenceSet.mockResolvedValue({ rows, meta });
 }
 
 const tRex: Occurrence = {
@@ -99,7 +101,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     // And the agent gets an actionable empty notice echoing the filter.
     const enr = getEnrichment(ctx);
     expect(enr.totalCount).toBe(0);
-    expect(String(enr.notice)).toMatch(/No occurrences matched Nothingium/);
+    expect(String(enr.notice)).toMatch(/No occurrences matched base_name=Nothingium/);
     // #3: notice AND attribution are enrichment fields — the framework renders both
     // into content[] as a trailer, so content[]-only clients see the guidance + source.
     expect(String(enr.attribution)).toMatch(/Paleobiology Database/);
@@ -119,8 +121,8 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     // Advancing offset is the primary next step — exact page bounds, exact next offset.
     expect(String(enr.notice)).toContain('Showing occurrences 1–2 of 4170.');
     expect(String(enr.notice)).toContain('Advance offset to 2 for the next page.');
-    expect(String(enr.notice)).toContain('Or raise limit (max 500) to pull more per page.');
-    // A page the inline budget never cut has nothing to stage, canvas or not.
+    expect(String(enr.notice)).toContain('Or raise limit (max 10000) to pull more per page.');
+    // With canvas disabled, paging guidance does not suggest staging.
     expect(String(enr.notice)).not.toMatch(/DataCanvas|CANVAS_PROVIDER_TYPE/);
   });
 
@@ -192,17 +194,16 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
   });
 
   it('never advises raising limit when limit is already at its maximum (#14)', async () => {
-    // Bare rows keep the full 500-row page inside the inline response budget, so
-    // `limit` (not the budget) is what bounded it.
-    const rows = Array.from({ length: 500 }, (_, i) => ({ occurrence_no: i + 1 }));
-    stubRows(rows, { recordsFound: 4170 });
+    // The configured cap serves 1,000 rows even when the requested limit is 10,000.
+    const rows = Array.from({ length: 1000 }, (_, i) => ({ occurrence_no: i + 1 }));
+    stubRows(rows, { recordsFound: 12000 });
     const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
-    const input = searchOccurrencesTool.input.parse({ base_name: 'Dinosauria', limit: 500 });
+    const input = searchOccurrencesTool.input.parse({ base_name: 'Dinosauria', limit: 10000 });
     await searchOccurrencesTool.handler(input, ctx);
 
     const notice = String(getEnrichment(ctx).notice);
-    expect(notice).toContain('Showing occurrences 1–500 of 4170.');
-    expect(notice).toContain('Advance offset to 500 for the next page.');
+    expect(notice).toContain('Showing occurrences 1–1000 of 12000.');
+    expect(notice).toContain('Advance offset to 1000 for the next page.');
     // The pre-#14 copy told the agent to raise a limit that was already maxed.
     expect(notice).not.toContain('raise limit');
   });
@@ -264,7 +265,9 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     const emptyNotice = String(getEnrichment(emptyCtx).notice);
     expect(emptyNotice).not.toContain('did not match');
     expect(emptyNotice).not.toContain('PBDB could not use');
-    expect(emptyNotice).toContain('No occurrences matched Tyrannosaurus in Cambrian');
+    expect(emptyNotice).toContain(
+      'No occurrences matched base_name=Tyrannosaurus, interval=Cambrian',
+    );
     // The two notices must be distinguishable — that is the whole point of the fix.
     expect(typoNotice).not.toBe(emptyNotice);
   });
@@ -429,7 +432,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     await searchOccurrencesTool.handler(input, ctx);
 
     expect(String(getEnrichment(ctx).notice)).toContain(
-      'No occurrences matched taxon_no 38613 in Cambrian.',
+      'No occurrences matched base_id=38613, interval=Cambrian.',
     );
   });
 
@@ -655,9 +658,10 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     const result = await runToolContract(searchOccurrencesTool, { base_name: 'Dinosauria' });
 
     const md = renderText(result.content as { type: string; text?: string }[]);
+    expect(result.structuredContent).toMatchObject({ notice: expect.stringContaining(warning) });
     expect(md).not.toMatch(/^### Forged/m);
     expect(md).toContain(
-      "> PBDB could not use part of this query: there are no records with lithology 'x' ### Forged. That filter did not constrain",
+      "> PBDB could not use part of this query: there are no records with lithology 'x'\n> ### Forged. That filter did not constrain",
     );
   });
 });
@@ -697,7 +701,7 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
   });
 
   it('spills a large result to the canvas and reports table_name + staged row_count', async () => {
-    stubRows(paddedRows(400));
+    stubRows(paddedRows(400), { recordsFound: 401 });
     const instance = makeFakeInstance('canvasXyz02');
     getCanvas.mockReturnValue({ acquire: vi.fn().mockResolvedValue(instance) });
 
@@ -714,7 +718,7 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
     // The spill notice points the agent at the dataframe query tool.
     expect(String(getEnrichment(ctx).notice)).toMatch(/paleobiology_dataframe_query/);
     // The staged 400 rows ARE every match upstream — claim no shortfall.
-    expect(getEnrichment(ctx).totalCount).toBe(400);
+    expect(getEnrichment(ctx).totalCount).toBe(401);
     expect(String(getEnrichment(ctx).notice)).not.toMatch(/unstaged/);
   });
 
@@ -763,8 +767,9 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
     const result = await searchOccurrencesTool.handler(input, ctx);
 
     expect(captured?.offset).toBe(500);
-    expect(result.spilled).toBe(true);
+    expect(result.spilled).toBe(false);
     expect(result.row_count).toBe(500);
+    expect(instance.registerTable).not.toHaveBeenCalled();
     const notice = String(getEnrichment(ctx).notice);
     expect(notice).toContain('Showing occurrences 501–1000 of 4170.');
     expect(notice).toContain('Advance offset to 1000 for the next page.');
@@ -774,7 +779,7 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
     // The canvas mints ids from nanoid's URL-safe alphabet, which includes "-".
     // A raw `occurrences_<id>` table name with a hyphen is an illegal SQL
     // identifier and the canvas rejects it — the id portion must be sanitized.
-    stubRows(paddedRows(400));
+    stubRows(paddedRows(400), { recordsFound: 401 });
     const instance = makeFakeInstance('a-VBpZv9G');
     getCanvas.mockReturnValue({ acquire: vi.fn().mockResolvedValue(instance) });
 
@@ -788,7 +793,7 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
   });
 
   it('reuses an explicit canvas_id passed by the caller when the page spills', async () => {
-    stubRows(paddedRows(400));
+    stubRows(paddedRows(400), { recordsFound: 401 });
     const instance = makeFakeInstance('reusedId03', { isNew: false });
     const acquire = vi.fn().mockResolvedValue(instance);
     getCanvas.mockReturnValue({ acquire });
@@ -800,7 +805,10 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
       canvas_id: 'reusedId03',
     });
     const result = await searchOccurrencesTool.handler(input, ctx);
-    expect(acquire).toHaveBeenCalledWith('reusedId03', ctx);
+    expect(acquire).toHaveBeenCalledWith(
+      'reusedId03',
+      expect.objectContaining({ ...ctx, signal: expect.any(AbortSignal) }),
+    );
     // The occurrence table is replaced under the same name, not appended to.
     expect(instance.registerTable).toHaveBeenCalledOnce();
     expect(instance.registerTable.mock.calls[0]?.[0]).toBe('occurrences_reusedId03');
@@ -808,7 +816,7 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
   });
 
   it('starts a fresh canvas when canvas_id arrives blank and the page spills (#22)', async () => {
-    stubRows(paddedRows(400));
+    stubRows(paddedRows(400), { recordsFound: 401 });
     const acquire = vi.fn().mockResolvedValue(makeFakeInstance('freshId004'));
     getCanvas.mockReturnValue({ acquire });
 
@@ -819,7 +827,10 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
       canvas_id: '',
     });
     await searchOccurrencesTool.handler(input, ctx);
-    expect(acquire).toHaveBeenCalledWith(undefined, ctx);
+    expect(acquire).toHaveBeenCalledWith(
+      undefined,
+      expect.objectContaining({ ...ctx, signal: expect.any(AbortSignal) }),
+    );
   });
 
   describe('canvas slots (#32)', () => {
@@ -871,7 +882,7 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
     });
 
     it('drops a freshly minted canvas when staging fails, and rethrows', async () => {
-      stubRows(paddedRows(400));
+      stubRows(paddedRows(400), { recordsFound: 401 });
       const instance = makeFakeInstance('mintFail01');
       instance.registerTable.mockRejectedValue(new Error('appender failed'));
       const drop = vi.fn().mockResolvedValue(true);
@@ -880,11 +891,14 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
       const ctx = createMockContext({ errors: searchOccurrencesTool.errors });
       const input = searchOccurrencesTool.input.parse({ base_name: 'Dinosauria', limit: 500 });
       await expect(searchOccurrencesTool.handler(input, ctx)).rejects.toThrow('appender failed');
-      expect(drop).toHaveBeenCalledWith('mintFail01', ctx);
+      expect(drop).toHaveBeenCalledWith(
+        'mintFail01',
+        expect.objectContaining({ ...ctx, signal: expect.any(AbortSignal) }),
+      );
     });
 
-    it('keeps a caller-supplied canvas when staging fails, dropping only the partial table', async () => {
-      stubRows(paddedRows(400));
+    it('keeps a caller-supplied canvas and prior committed table when staging fails', async () => {
+      stubRows(paddedRows(400), { recordsFound: 401 });
       const instance = makeFakeInstance('reuseFail1', { isNew: false });
       instance.registerTable.mockRejectedValue(new Error('appender failed'));
       const drop = vi.fn();
@@ -898,7 +912,7 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
       });
       await expect(searchOccurrencesTool.handler(input, ctx)).rejects.toThrow('appender failed');
       expect(drop).not.toHaveBeenCalled();
-      expect(instance.drop).toHaveBeenCalledWith('occurrences_reuseFail1');
+      expect(instance.drop).not.toHaveBeenCalled();
     });
   });
 
@@ -907,7 +921,7 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
       'call paleobiology_dataframe_describe for the table and column names, then paleobiology_dataframe_query';
 
     it('names describe, then query, on both surfaces of a spilled result', async () => {
-      stubRows(paddedRows(400), { recordsFound: 400 });
+      stubRows(paddedRows(400), { recordsFound: 401 });
       getCanvas.mockReturnValue({
         acquire: vi.fn().mockResolvedValue(makeFakeInstance('canvasDsc1')),
       });
@@ -927,7 +941,7 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
     });
 
     it('names no dataframe tool on a result that fit inline (#16)', async () => {
-      stubRows([tRex, { ...tRex, occurrence_no: 2 }], { recordsFound: 40 });
+      stubRows([tRex, { ...tRex, occurrence_no: 2 }], { recordsFound: 2 });
       getCanvas.mockReturnValue({ acquire: vi.fn() });
 
       const result = await runToolContract(searchOccurrencesTool, {
@@ -938,7 +952,7 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
       expect(result.structuredContent).not.toHaveProperty('canvas_id');
       expect(result.structuredContent).not.toHaveProperty('table_name');
       const notice = String((result.structuredContent as { notice?: string }).notice);
-      expect(notice).toContain('Advance offset to 2 for the next page.');
+      expect(notice).toBe('undefined');
       expect(notice).not.toContain('paleobiology_dataframe');
     });
 
@@ -958,7 +972,7 @@ describe('paleobiology_search_occurrences (canvas enabled)', () => {
       const sentences = searchOccurrencesTool.description.split(/(?<=\.)\s+/);
       const naming = sentences.filter((s) => s.includes('paleobiology_dataframe_'));
       expect(naming).toEqual([
-        'When this deployment has DataCanvas enabled, a set that outgrows the inline preview stages on a canvas (canvas_id + table_name, returned only then): list its columns with paleobiology_dataframe_describe, then run SQL with paleobiology_dataframe_query (count by interval, group by formation/country, map by region).',
+        'When this deployment has DataCanvas enabled, a first page with additional matches stages up to 50,000 occurrences on a canvas: use paleobiology_dataframe_describe for columns, then paleobiology_dataframe_query for SQL over the staged set; the notice distinguishes complete from partial coverage.',
       ]);
     });
   });
@@ -991,7 +1005,7 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
       row_count: 5,
       totalCount: 22,
       notice:
-        'Showing occurrences 1–5 of 22. Advance offset to 5 for the next page. Or raise limit (max 500) to pull more per page.',
+        'Showing occurrences 1–5 of 22. Advance offset to 5 for the next page. Or raise limit (max 10000) to pull more per page.',
       attribution: 'Data from the Paleobiology Database (paleobiodb.org), licensed CC BY 4.0.',
     });
     expect(result.content).toMatchInlineSnapshot(`
@@ -1048,16 +1062,16 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
         {
           "text": "
 
-      **Source:** Data from the Paleobiology Database (paleobiodb.org), licensed CC BY 4.0.
+      **Source:** \`Data from the Paleobiology Database (paleobiodb.org), licensed CC BY 4.0.\`
       **22 total**
-      > Showing occurrences 1–5 of 22. Advance offset to 5 for the next page. Or raise limit (max 500) to pull more per page.",
+      > Showing occurrences 1–5 of 22. Advance offset to 5 for the next page. Or raise limit (max 10000) to pull more per page.",
           "type": "text",
         },
       ]
     `);
   });
 
-  it('cuts a full canvas-off page to the budget, keeping totalCount and naming the next offset', async () => {
+  it('returns a full canvas-off page, keeping totalCount and naming the next offset', async () => {
     stubRows(realisticRows(500), { recordsFound: 37883 });
 
     const result = await runToolContract(searchOccurrencesTool, {
@@ -1066,8 +1080,8 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
     });
 
     const bytes = surfaceBytes(result);
-    expect(bytes.structured).toBeLessThanOrEqual(BUDGET);
-    expect(bytes.text).toBeLessThanOrEqual(BUDGET);
+    expect(bytes.structured).toBeGreaterThan(BUDGET);
+    expect(bytes.text).toBeGreaterThan(BUDGET);
     const structured = result.structuredContent as {
       occurrences: Occurrence[];
       row_count: number;
@@ -1075,22 +1089,14 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
       notice: string;
     };
     const shown = structured.occurrences.length;
-    expect(shown).toBeGreaterThan(0);
-    expect(shown).toBeLessThan(500);
+    expect(shown).toBe(500);
     expect(structured.row_count).toBe(shown);
     expect(structured.totalCount).toBe(37883);
     expect(structured.notice).toContain(`Showing occurrences 1–${shown} of 37883.`);
     expect(structured.notice).toContain(`Advance offset to ${shown} for the next page.`);
-    expect(structured.notice).toContain(
-      `This page was cut to ${shown} of the 500 pulled to fit the inline response size.`,
-    );
-    expect(structured.notice).not.toContain('raise limit');
-    // Without a canvas the cut page cannot stage; the notice says so as behavior.
-    expect(structured.notice).toContain(
-      'This deployment has no DataCanvas, so a page too large to show inline cannot be staged for SQL; page through it with offset.',
-    );
+    expect(structured.notice).not.toContain('cut');
     expect(structured.notice).not.toContain('CANVAS_PROVIDER_TYPE');
-    // Rows are cut whole and both surfaces carry the same rows.
+    // Both surfaces carry every served row.
     const text = renderText(result.content as { type: string; text?: string }[]);
     expect(text.split('\n### ').length - 1).toBe(shown);
     expect(text).toContain(
@@ -1099,7 +1105,7 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
     expect(text).not.toContain(`**occurrence_no:** ${shown + 1} `);
   });
 
-  it('serves a limit above 500 at the 500 cap and names it', async () => {
+  it('serves a limit above 500 without the former clamp', async () => {
     let captured: OccurrenceFilter | undefined;
     searchOccurrences.mockImplementation((filter: OccurrenceFilter) => {
       captured = filter;
@@ -1112,14 +1118,11 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
     });
 
     expect(result.isError).toBeFalsy();
-    expect(captured?.limit).toBe(500);
+    expect(captured?.limit).toBe(600);
     const notice = String((result.structuredContent as { notice?: string }).notice);
-    expect(notice).toContain('Showing occurrences 1–500 of 37883.');
-    expect(notice).toContain('Advance offset to 500 for the next page.');
-    expect(notice).toContain(
-      'limit 600 is above the per-call cap of 500, so this page drew from at most 500 occurrences.',
-    );
-    expect(notice).not.toContain('raise limit');
+    expect(notice).toContain('Showing occurrences 1–600 of 37883.');
+    expect(notice).toContain('Advance offset to 600 for the next page.');
+    expect(notice).not.toContain('per-call cap of 500');
   });
 
   it('rejects a limit above the 10,000 ceiling at the schema', async () => {
@@ -1135,7 +1138,7 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
     expect(searchOccurrencesTool.input.parse({ base_name: 'X', limit: 10_000 }).limit).toBe(10_000);
   });
 
-  it('walks a budget-cut match set by the named offsets with no gaps or repeats', async () => {
+  it('walks a paged match set by the named offsets with no gaps or repeats', async () => {
     const all = realisticRows(1200);
     searchOccurrences.mockImplementation((filter: OccurrenceFilter) => ({
       rows: all.slice(filter.offset, filter.offset + filter.limit),
@@ -1151,8 +1154,6 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
         limit: 500,
         offset,
       });
-      const bytes = surfaceBytes(result);
-      expect(Math.max(bytes.structured, bytes.text)).toBeLessThanOrEqual(BUDGET);
       const structured = result.structuredContent as { occurrences: Occurrence[]; notice?: string };
       seen.push(...structured.occurrences.map((o) => o.occurrence_no));
       pages += 1;
@@ -1161,11 +1162,11 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
       expect(Number(next)).toBe(offset + structured.occurrences.length);
       offset = Number(next);
     }
-    expect(pages).toBeGreaterThan(3);
+    expect(pages).toBe(3);
     expect(seen).toEqual(all.map((o) => o.occurrence_no));
   });
 
-  it('spills on the same budget and keeps both surfaces inside it (canvas on)', async () => {
+  it('returns later pages whole and leaves the canvas untouched', async () => {
     stubRows(realisticRows(500), { recordsFound: 37883 });
     getCanvas.mockReturnValue({
       acquire: vi.fn().mockResolvedValue(makeFakeInstance('canvasBgt1')),
@@ -1178,18 +1179,18 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
     });
 
     const bytes = surfaceBytes(result);
-    expect(bytes.structured).toBeLessThanOrEqual(BUDGET);
-    expect(bytes.text).toBeLessThanOrEqual(BUDGET);
+    expect(bytes.structured).toBeGreaterThan(BUDGET);
+    expect(bytes.text).toBeGreaterThan(BUDGET);
     const structured = result.structuredContent as {
       occurrences: Occurrence[];
       spilled: boolean;
       row_count: number;
       notice: string;
     };
-    expect(structured.spilled).toBe(true);
+    expect(structured.spilled).toBe(false);
     expect(structured.row_count).toBe(500);
-    expect(structured.occurrences.length).toBeLessThan(500);
-    // The next offset counts staged rows, not the inline preview.
+    expect(structured.occurrences.length).toBe(500);
+    // The next offset counts the delivered inline rows.
     expect(structured.notice).toContain('Showing occurrences 1001–1500 of 37883.');
     expect(structured.notice).toContain('Advance offset to 1500 for the next page.');
   });
@@ -1212,8 +1213,9 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
     expect(acquire).not.toHaveBeenCalled();
   });
 
-  it('walks a spilling match set by the named offsets, each page staged whole', async () => {
+  it('walks a spilling match set by the named offsets, staging only the first page', async () => {
     const all = realisticRows(1200);
+    searchOccurrenceSet.mockResolvedValue({ rows: all, meta: { recordsFound: all.length } });
     searchOccurrences.mockImplementation((filter: OccurrenceFilter) => ({
       rows: all.slice(filter.offset, filter.offset + filter.limit),
       meta: { recordsFound: all.length },
@@ -1229,8 +1231,8 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
         offset,
       });
       const structured = result.structuredContent as { spilled: boolean; notice?: string };
-      // Every page of these rows, the 200-row last one included, outgrows the budget.
-      expect(structured.spilled).toBe(true);
+      // Whole-set staging runs only at offset zero.
+      expect(structured.spilled).toBe(offset === 0);
       const next = /Advance offset to (\d+)/.exec(structured.notice ?? '')?.[1];
       if (!next) break;
       offset = Number(next);
@@ -1242,7 +1244,7 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
   });
 });
 
-/** Rows padded so that 400 of them outgrow the inline budget and spill (~620 bytes of JSON each). */
+/** Large rows exercise complete inline delivery alongside staging. */
 function paddedRows(count: number): Occurrence[] {
   return Array.from({ length: count }, (_, i) => ({
     ...tRex,
@@ -1251,7 +1253,7 @@ function paddedRows(count: number): Occurrence[] {
   }));
 }
 
-/** Minimal rows: hundreds fit the inline budget, so the page limit is what binds. */
+/** Minimal rows for paging and staging cases. */
 function bareRows(count: number): Occurrence[] {
   return Array.from({ length: count }, (_, i) => ({ occurrence_no: i + 1 }));
 }

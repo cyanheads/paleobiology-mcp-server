@@ -3,8 +3,8 @@
  * cases for the mechanism (blank, whitespace-only, padded, absent, wrong-type
  * values; a defaulted enum), proof that the wrapper leaves the emitted JSON
  * Schema byte-identical at its own seam, and the tools/list regression: every
- * field the five domain tools wrap still advertises exactly what it did before
- * the wrapper existed. Per-tool tests prove only the wiring.
+ * wrapped fields preserve their declared shapes and current descriptions.
+ * Per-tool tests prove only the wiring.
  * @module tests/tools/blank-as-unset
  */
 
@@ -72,10 +72,9 @@ describe('blankAsUnset', () => {
 });
 
 /**
- * The advertised schema of every wrapped field, captured from `tools/list` before
- * the wrapper was introduced. No domain tool marks any field required.
+ * Expected advertised schemas of wrapped fields. No domain tool marks any field required.
  */
-const PRE_WRAPPER_FIELDS: Record<string, Record<string, unknown>> = {
+const EXPECTED_WRAPPED_FIELDS: Record<string, Record<string, unknown>> = {
   paleobiology_search_occurrences: {
     base_name: {
       description:
@@ -94,7 +93,7 @@ const PRE_WRAPPER_FIELDS: Record<string, Record<string, unknown>> = {
     },
     canvas_id: {
       description:
-        'Canvas id from a prior call to re-stage onto the same workspace. Used only when this page spills: reusing it REPLACES (overwrites) the prior occurrence table — each search restages the full result, it does not append to or accumulate across earlier ones — while a page that fits inline leaves that canvas untouched. Omit to start fresh; a spilled response returns a new id.',
+        'Canvas id from a prior call to restage onto the same workspace. Used only on a first page with matches beyond that page: replaces the prior occurrence table atomically with a bounded matching set, without appending. Later offsets and complete pages leave it untouched. Omit to start fresh.',
       type: 'string',
       pattern: '^[A-Za-z0-9_-]{10}$',
     },
@@ -117,7 +116,8 @@ const PRE_WRAPPER_FIELDS: Record<string, Record<string, unknown>> = {
       type: 'string',
     },
     formation: {
-      description: 'Geologic formation name to filter by, e.g. "Hell Creek".',
+      description:
+        'Stored geologic formation name or PBDB list/wildcard expression, e.g. "Hell Creek"; passed unchanged, without stripping Formation, Group, or Member.',
       type: 'string',
     },
     lithology: {
@@ -184,12 +184,12 @@ describe('tools/list input schemas of the wrapped fields', () => {
     getDiversityTool,
     getTaxonTool,
     listIntervalsTool,
-  ])('$name advertises each wrapped field unchanged', (def) => {
+  ])('$name advertises the declared wrapped fields', (def) => {
     const emitted = advertised(def.input) as {
       properties: Record<string, unknown>;
       required?: string[];
     };
-    const fields = PRE_WRAPPER_FIELDS[def.name];
+    const fields = EXPECTED_WRAPPED_FIELDS[def.name];
     expect(fields).toBeDefined();
     for (const [field, schema] of Object.entries(fields ?? {})) {
       expect(emitted.properties[field], field).toStrictEqual(schema);

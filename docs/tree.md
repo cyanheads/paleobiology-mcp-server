@@ -1,6 +1,6 @@
 # paleobiology-mcp-server - Directory Structure
 
-Generated on: 2026-10-15 20:56:30
+Generated on: 2026-11-01 06:01:19
 
 ```text
 paleobiology-mcp-server/
@@ -40,6 +40,8 @@ paleobiology-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -137,8 +139,12 @@ paleobiology-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── paleobiology-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
+│   │   ├── canvas-default.ts
 │   │   └── server-config.ts
 │   ├── mcp-server/
 │   │   ├── prompts/
@@ -162,7 +168,7 @@ paleobiology-mcp-server/
 │   │       │   ├── search-collections.tool.ts
 │   │       │   └── search-occurrences.tool.ts
 │   │       ├── blank-as-unset.ts
-│   │       ├── inline-budget.ts
+│   │       ├── country-filter.ts
 │   │       ├── one-line.ts
 │   │       ├── paging.ts
 │   │       └── pbdb-notices.ts
@@ -176,6 +182,8 @@ paleobiology-mcp-server/
 │   │   └── canvas-accessor.ts
 │   └── index.ts
 ├── tests/
+│   ├── config/
+│   │   └── canvas-default.test.ts
 │   ├── fixtures/
 │   │   └── pbdb-refs-list.json
 │   ├── helpers/
@@ -186,20 +194,26 @@ paleobiology-mcp-server/
 │   ├── resources/
 │   │   ├── occurrence.resource.test.ts
 │   │   └── reference.resource.test.ts
+│   ├── scripts/
+│   │   └── packaging.test.ts
 │   ├── services/
 │   │   ├── interval-index.test.ts
+│   │   ├── pbdb-filters.test.ts
 │   │   ├── pbdb-normalizers.test.ts
-│   │   └── pbdb-not-found.test.ts
+│   │   ├── pbdb-not-found.test.ts
+│   │   ├── record-contracts.test.ts
+│   │   └── reference-text-cost.test.ts
 │   └── tools/
 │       ├── blank-as-unset.test.ts
+│       ├── country-filter.test.ts
 │       ├── dataframe.tool.test.ts
 │       ├── get-diversity.tool.test.ts
 │       ├── get-references.tool.test.ts
 │       ├── get-taxon.tool.test.ts
-│       ├── inline-budget.test.ts
 │       ├── list-intervals.tool.test.ts
 │       ├── occurrence-canvas.test.ts
 │       ├── one-line.test.ts
+│       ├── output-policy.test.ts
 │       ├── search-collections.tool.test.ts
 │       ├── search-occurrences.tool.test.ts
 │       └── tool-registration.test.ts
@@ -219,7 +233,9 @@ paleobiology-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json

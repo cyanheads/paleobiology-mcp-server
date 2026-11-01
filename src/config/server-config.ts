@@ -27,7 +27,7 @@ const ServerConfigSchema = z.object({
     .positive()
     .default(1000)
     .describe(
-      'Hard cap on occurrence or collection rows pulled per call. The tools already pull at most 500 per call, so only a lower value takes effect.',
+      'Hard cap on occurrence or collection page rows. The tools accept at most 10,000 rows per page. Separate occurrence-set staging is bounded at 50,000 rows independently of this page cap.',
     ),
   dataframeDropEnabled: z
     .stringbool()

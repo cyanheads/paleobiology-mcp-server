@@ -5,7 +5,7 @@
  * environment. Surfaces modern AND paleo coordinates, both temporal
  * representations, and the higher classification on every row. Pages inline via
  * limit/offset against PBDB's true match count; with DataCanvas on, a page that
- * outgrows the inline budget spills to a canvas for SQL.
+ * has additional matches stages a bounded matching set for SQL.
  * @module mcp-server/tools/definitions/search-occurrences.tool
  */
 
@@ -19,29 +19,17 @@ import {
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getServerConfig } from '@/config/server-config.js';
 import { blankAsUnset } from '@/mcp-server/tools/blank-as-unset.js';
+import { CountryFilterSchema } from '@/mcp-server/tools/country-filter.js';
 import {
   ClassificationSchema,
   fmtClassification,
 } from '@/mcp-server/tools/definitions/get-taxon.tool.js';
-import {
-  ENVELOPE_RESERVE_BYTES,
-  fitRows,
-  jsonItemBytes,
-  type SurfaceCost,
-  utf8Bytes,
-} from '@/mcp-server/tools/inline-budget.js';
 import { oneLine } from '@/mcp-server/tools/one-line.js';
-import {
-  cutPageNotice,
-  ENVIRONMENTS,
-  LIMIT_CEILING,
-  MAX_PAGE,
-  overCapNotice,
-} from '@/mcp-server/tools/paging.js';
+import { ENVIRONMENTS, LIMIT_CEILING, MAX_PAGE, overCapNotice } from '@/mcp-server/tools/paging.js';
 import { emitNotice, ignoredFilterNotice } from '@/mcp-server/tools/pbdb-notices.js';
 import { getCanvas } from '@/services/canvas-accessor.js';
-import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
-import type { EnvironmentFilter, Occurrence, OccurrenceFilter } from '@/services/pbdb/types.js';
+import { getPbdbService, MAX_STAGED_OCCURRENCES } from '@/services/pbdb/pbdb-service.js';
+import type { Occurrence, OccurrenceFilter, OccurrenceSearch } from '@/services/pbdb/types.js';
 import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
 
 /** Stable types preserve fractions and columns absent from the inline preview. */
@@ -174,18 +162,18 @@ const SearchOccurrencesOutputSchema = z.object({
   occurrences: z
     .array(OccurrenceSchema)
     .describe(
-      'Inline preview of matching occurrences for the requested page, ending at a whole row where more would exceed the inline response size. The staged occurrence set is on the canvas when spilled is true — it is one page of the match set rather than every match (the notice states which rows this page covers, how many matched upstream, and the offset that reaches the next page).',
+      'Every occurrence in the requested page, subject to the configured page cap. When spilled is true, the canvas holds the bounded matching set independently of this page; the notice states whether staging covers every match.',
     ),
   spilled: z
     .boolean()
     .describe(
-      'True when the result exceeded the inline preview and the staged occurrence set was written to the canvas.',
+      'True when the first page had additional matches and the bounded matching set was written to the canvas.',
     ),
   canvas_id: z
     .string()
     .optional()
     .describe(
-      'Canvas id holding the staged occurrence set — pass it to paleobiology_dataframe_describe for the table and column names, then to paleobiology_dataframe_query to run SQL against them. Present only when spilled is true; a result that fit inline stages nothing, so there is no table to query.',
+      'Canvas id holding the staged occurrence set — pass it to paleobiology_dataframe_describe for columns, then paleobiology_dataframe_query for SQL. Present only when spilled is true; complete pages and later offsets stage nothing.',
     ),
   table_name: z
     .string()
@@ -196,7 +184,7 @@ const SearchOccurrencesOutputSchema = z.object({
   row_count: z
     .number()
     .describe(
-      'Rows staged on the canvas when spilled; otherwise the number of occurrences shown inline. At most 500 per call — compare against the totalCount enrichment for how many matched upstream.',
+      'Rows staged on the canvas when spilled (at most 50,000); otherwise occurrences returned inline. Compare against totalCount for full-match coverage.',
     ),
 });
 
@@ -206,7 +194,7 @@ type OccurrenceRow = z.infer<typeof OccurrenceSchema>;
 export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
   title: 'paleobiology-mcp-server: search fossil occurrences',
   description:
-    'Search fossil occurrences filtered by taxon, geologic time, geography, and depositional environment — the flagship. Use base_name for a clade and all its descendants (what "Tyrannosaurus occurrences" usually means), base_id for that same clade by resolved taxon id, or taxon_name for an exact taxon. Bound the age by a named interval (e.g. "Maastrichtian") or a max_ma/min_ma range, and/or a lng/lat bounding box; scope to a single locality with collection_no (take it from a paleobiology_search_collections row). At least one filter is required — taxon, time, place, environment, or collection_no. Every row carries two distinct coordinate systems — modern lng/lat (where the rock is today) and paleo lng/lat (where the landmass sat at deposition) — plus the formation, age interval, and higher classification (phylum through genus); never plot a deep-time occurrence on a modern coastline. Resolve a name with paleobiology_get_taxon first if unsure. Broad queries return many rows: an inline preview answers the immediate question. When this deployment has DataCanvas enabled, a set that outgrows the inline preview stages on a canvas (canvas_id + table_name, returned only then): list its columns with paleobiology_dataframe_describe, then run SQL with paleobiology_dataframe_query (count by interval, group by formation/country, map by region). The response reports how many occurrences matched in total, which rows this page covers, and the offset that reaches the next page — page through the whole match set with limit/offset.',
+    'Search fossil occurrences by clade-inclusive base_name or base_id, exact taxon_name, interval or max_ma/min_ma, modern geographic bounds, country, formation, environment, or collection_no. At least one filter is required. Formation matches PBDB stored names and preserves list/wildcard syntax; suffixes are not removed. Resolve uncertain taxon names with paleobiology_get_taxon. Rows carry modern lng/lat, reconstructed paleolng/paleolat, age, strata, classification, and source reference_no; keep the coordinate systems distinct. Every served page row is returned, with total matches and the offset that continues the page. When this deployment has DataCanvas enabled, a first page with additional matches stages up to 50,000 occurrences on a canvas: use paleobiology_dataframe_describe for columns, then paleobiology_dataframe_query for SQL over the staged set; the notice distinguishes complete from partial coverage. Later offsets and complete pages stage nothing and leave any supplied canvas untouched.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     base_name: blankAsUnset(z.string().optional()).describe(
@@ -218,7 +206,7 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       .positive()
       .optional()
       .describe(
-        'Clade-inclusive taxon filter by PBDB taxon id — the taxon_no from paleobiology_get_taxon, or accepted_no on an occurrence row. Same clade-inclusive semantics as base_name, but unambiguous where a name is not (homonyms, synonyms, unresolved spellings). Supply this or base_name, never both.',
+        'Clade-inclusive taxon filter by PBDB taxon id — the accepted_no from paleobiology_get_taxon or an occurrence row. Same clade-inclusive semantics as base_name, but unambiguous where a name is not (homonyms, synonyms, unresolved spellings). Supply this or base_name, never both.',
       ),
     taxon_name: blankAsUnset(z.string().optional()).describe(
       'Exact taxon filter — only this taxon, not descendants. Use instead of base_name when you want a single taxon.',
@@ -283,6 +271,12 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     environment: blankAsUnset(z.enum(ENVIRONMENTS).optional()).describe(
       'Depositional environment: "marine", "terrestrial", or "freshwater" (lacustrine + fluvial). Omit for all.',
     ),
+    formation: blankAsUnset(z.string().optional()).describe(
+      'Stored formation name or PBDB list/wildcard expression, passed unchanged; suffixes such as Formation are not removed.',
+    ),
+    country: blankAsUnset(CountryFilterSchema.optional()).describe(
+      'PBDB country/continent codes, comma-separated; ! excludes a list and ^ subtracts a code, e.g. NOA,^US.',
+    ),
     limit: z
       .number()
       .int()
@@ -290,7 +284,7 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       .max(LIMIT_CEILING)
       .default(100)
       .describe(
-        `Maximum occurrences to pull per page. Up to ${MAX_PAGE} are pulled per call; a larger value is served at ${MAX_PAGE}, and the paging notice names that cap when more matches remain. A page can show fewer rows than it pulled when more would exceed the inline response size — the notice then names the offset that continues. Pair with offset to walk the whole match set.`,
+        `Maximum occurrences to return per page, up to ${MAX_PAGE}, subject to PBDB_MAX_OCCURRENCES. Every fetched page row is returned; the notice discloses a lower configured cap. Pair with offset to walk the match set.`,
       ),
     offset: z
       .number()
@@ -301,7 +295,7 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
         'Number of matching occurrences to skip before this page — page with limit by advancing offset. The response notice names the exact offset that reaches the next page.',
       ),
     canvas_id: blankAsUnset(CanvasIdSchema.optional()).describe(
-      'Canvas id from a prior call to re-stage onto the same workspace. Used only when this page spills: reusing it REPLACES (overwrites) the prior occurrence table — each search restages the full result, it does not append to or accumulate across earlier ones — while a page that fits inline leaves that canvas untouched. Omit to start fresh; a spilled response returns a new id.',
+      'Canvas id from a prior call to restage onto the same workspace. Used only on a first page with matches beyond that page: replaces the prior occurrence table atomically with a bounded matching set, without appending. Later offsets and complete pages leave it untouched. Omit to start fresh.',
     ),
   }),
   output: SearchOccurrencesOutputSchema,
@@ -315,7 +309,7 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       .string()
       .optional()
       .describe(
-        'Guidance when no occurrence matched, when results spilled to the canvas, when occurrences remain past this page (naming the offset that reaches the next one), when offset ran past the end of the match set, when a filter value was not recognized and ignored, or when a page cut to the inline response size could not be staged because this deployment has no DataCanvas.',
+        'Applied filters and empty/past-end guidance, page continuation, ignored upstream filters, staged-set coverage, or optional staging unavailability.',
       ),
     attribution: z.string().describe('CC-BY data attribution for the Paleobiology Database.'),
   },
@@ -363,9 +357,9 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       reason: 'canvas_capacity_exhausted',
       code: JsonRpcErrorCode.RateLimited,
       retryable: true,
-      when: 'The page outgrew the inline response size and no canvas_id was passed, but every canvas slot open to this caller is already taken.',
+      when: 'The first page has additional matches to stage and no canvas_id was passed, but every canvas slot open to this caller is already taken.',
       recovery:
-        'Pass a canvas_id you already hold to restage this page onto that canvas, replacing its occurrence table, or lower limit so the page fits inline and stages nothing (the message names a limit that fits).',
+        'Pass a canvas_id you already hold to replace its occurrence table, or narrow the matching set until it fits in the requested page.',
     },
   ],
 
@@ -399,7 +393,7 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     }
 
     const filter: OccurrenceFilter = {
-      limit: Math.min(input.limit, MAX_PAGE),
+      limit: input.limit,
       offset: input.offset,
     };
     if (input.base_name) filter.baseName = input.base_name;
@@ -413,7 +407,9 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     if (input.lngmax != null) filter.lngmax = input.lngmax;
     if (input.latmin != null) filter.latmin = input.latmin;
     if (input.latmax != null) filter.latmax = input.latmax;
-    if (input.environment) filter.environment = input.environment as EnvironmentFilter;
+    if (input.environment) filter.environment = input.environment;
+    if (input.country) filter.country = input.country;
+    if (input.formation) filter.formation = input.formation;
 
     // The service pulls at most `cap` rows (the smaller of the served page size and
     // the server-wide row cap). PBDB reports the true match count (`records_found`)
@@ -423,7 +419,11 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
 
     ctx.enrich({ attribution: PBDB_ATTRIBUTION });
 
-    const { rows, meta } = await getPbdbService().searchOccurrences(filter, ctx);
+    const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(55_000)]);
+    const boundedCtx = Object.assign(Object.create(Object.getPrototypeOf(ctx)), ctx, {
+      signal,
+    }) as Context;
+    const { rows, meta } = await getPbdbService().searchOccurrences(filter, boundedCtx);
     const total = meta.recordsFound ?? rows.length;
     ctx.enrich.total(total);
     const ignored = ignoredFilterNotice(meta.warnings);
@@ -433,34 +433,21 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       return { occurrences: [], spilled: false, row_count: 0 };
     }
 
-    const shown = fitRows(
-      rows,
-      OCCURRENCE_SURFACES,
-      ENVELOPE_RESERVE_BYTES + utf8Bytes(ignored ?? ''),
-    );
+    const shown = rows.length;
     const canvas = getCanvas();
-    const pageArgs = { offset: input.offset, pulled: rows.length, total, limit: input.limit, cap };
+    const pageArgs = { offset: input.offset, total, limit: input.limit, cap };
 
-    if (shown === rows.length || !canvas) {
-      // The page fits inline, or there is no canvas to stage the overflow on —
-      // either way nothing is staged and no canvas is acquired, so a caller's
-      // canvas_id is left untouched.
+    if (!canvas || input.offset !== 0 || rows.length >= total) {
+      // Later offsets, complete pages, and canvas-free deployments leave a supplied canvas untouched.
       const page = nextPageNotice({ ...pageArgs, shown });
-      emitNotice(
-        ctx,
-        ignored,
-        page,
-        page && !canvas && shown < rows.length
-          ? 'This deployment has no DataCanvas, so a page too large to show inline cannot be staged for SQL; page through it with offset.'
-          : undefined,
-      );
+      emitNotice(ctx, ignored, page);
       ctx.log.info('Occurrence search', {
         shown,
         pulled: rows.length,
         offset: input.offset,
         total,
       });
-      return { occurrences: rows.slice(0, shown), spilled: false, row_count: shown };
+      return { occurrences: rows, spilled: false, row_count: shown };
     }
 
     // Acquired only now that the page is known to spill, so a call that stages
@@ -468,18 +455,49 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     // the framework's generic hint points at a drop tool, but
     // paleobiology_dataframe_drop removes a table, never a canvas, so the refusal is
     // re-raised with the levers that work here.
-    const instance = await canvas.acquire(input.canvas_id, ctx).catch((err: unknown) => {
+    const instance = await canvas.acquire(input.canvas_id, boundedCtx).catch((err: unknown) => {
       if (err instanceof McpError && err.data?.reason === 'canvas_capacity_exhausted') {
         throw ctx.fail(
           'canvas_capacity_exhausted',
-          `No canvas slot is free to stage this page: the active canvas cap is reached. A limit of ${shown} or less fits this page inline.`,
+          'No canvas slot is free to stage the matching occurrences: the active canvas cap is reached.',
           undefined,
           { cause: err },
         );
       }
       throw err;
     });
-    const { tableName, stagedCount } = await stageOccurrences(canvas, instance, rows, ctx);
+    let set: OccurrenceSearch;
+    try {
+      set = await getPbdbService().searchOccurrenceSet(filter, boundedCtx);
+    } catch (err) {
+      await cleanupFreshCanvas(canvas, instance, ctx);
+      ctx.signal.throwIfAborted();
+      if (
+        !signal.aborted &&
+        (!(err instanceof McpError) ||
+          ![
+            JsonRpcErrorCode.ServiceUnavailable,
+            JsonRpcErrorCode.Timeout,
+            JsonRpcErrorCode.RateLimited,
+          ].includes(err.code))
+      )
+        throw err;
+      emitNotice(
+        ctx,
+        ignored,
+        nextPageNotice({ ...pageArgs, shown }),
+        'The matching set could not be acquired for SQL because PBDB is temporarily unavailable; this response still contains the requested page. Retry this first page to stage the set.',
+      );
+      return { occurrences: rows, spilled: false, row_count: rows.length };
+    }
+    const { tableName, stagedCount } = await stageOccurrences(
+      canvas,
+      instance,
+      set.rows,
+      boundedCtx,
+    );
+    const stagedTotal = set.meta.recordsFound;
+    if (stagedTotal !== undefined) ctx.enrich.total(stagedTotal);
     emitNotice(
       ctx,
       ignored,
@@ -487,8 +505,14 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
         `"${tableName}" — ${shown} rendered inline; call paleobiology_dataframe_describe for ` +
         'the table and column names, then paleobiology_dataframe_query to analyze the full staged ' +
         'set with SQL (e.g. count by interval, group by formation).',
-      // The next offset counts staged rows: the whole page is on the canvas.
-      nextPageNotice({ ...pageArgs, pulled: stagedCount, shown: stagedCount }),
+      // Inline paging retains the page request's snapshot and counts only its rows.
+      ignoredFilterNotice(set.meta.warnings),
+      stagedTotal === undefined
+        ? `This table contains ${stagedCount} occurrences; PBDB did not report the staging total, so completeness is unknown.`
+        : stagedCount < stagedTotal
+          ? `This table contains ${stagedCount} of ${stagedTotal} matching occurrences, bounded at ${MAX_STAGED_OCCURRENCES}; it is a partial set. Narrow the filters for complete-set SQL.`
+          : `The table contains all ${stagedCount} matching occurrences.`,
+      nextPageNotice({ ...pageArgs, shown }),
     );
     ctx.log.info('Occurrence search', {
       preview: shown,
@@ -498,7 +522,7 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       canvas_id: instance.canvasId,
     });
     return {
-      occurrences: rows.slice(0, shown),
+      occurrences: rows,
       spilled: true,
       canvas_id: instance.canvasId,
       table_name: tableName,
@@ -560,18 +584,9 @@ function renderOccurrence(o: OccurrenceRow): string {
   return lines.join('\n');
 }
 
-/** What one occurrence costs on each client surface: a JSON array element, and its `format()` block. */
-const OCCURRENCE_SURFACES: SurfaceCost<Occurrence>[] = [
-  jsonItemBytes,
-  (o) => utf8Bytes(renderOccurrence(o)) + BLOCK_SEPARATOR.length,
-];
-
 /**
- * Stage a page that overflows the inline budget, whole, as the occurrence table
- * of the canvas the handler acquired (the caller's canvas_id, or a fresh mint).
- * A failed or cancelled registration removes what it created (the whole canvas
- * when this call minted it, otherwise the partial table) and the original error
- * propagates.
+ * Register the bounded matching set atomically. The provider rolls back a failed
+ * replacement to the old table; only a canvas minted by this call needs cleanup.
  */
 async function stageOccurrences(
   canvas: DataCanvas,
@@ -590,15 +605,24 @@ async function stageOccurrences(
     });
     return { tableName: handle.tableName, stagedCount: handle.rowCount };
   } catch (err) {
-    const cleanup = instance.isNew ? canvas.drop(instance.canvasId, ctx) : instance.drop(tableName);
-    await cleanup.catch((cleanupErr: unknown) =>
-      ctx.log.warning('Could not remove a failed occurrence staging', {
-        canvas_id: instance.canvasId,
-        error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-      }),
-    );
+    await cleanupFreshCanvas(canvas, instance, ctx);
     throw err;
   }
+}
+
+/** Cleanup never replaces the acquisition, conversion, or cancellation failure. */
+async function cleanupFreshCanvas(
+  canvas: DataCanvas,
+  instance: CanvasInstance,
+  ctx: Context,
+): Promise<void> {
+  if (instance.isNew)
+    await canvas.drop(instance.canvasId, ctx).catch((error: unknown) =>
+      ctx.log.warning('Could not remove a failed occurrence staging', {
+        canvas_id: instance.canvasId,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
 }
 
 /** The selector subset of the input read by the missing-filter guard and the empty notice. */
@@ -615,6 +639,8 @@ type OccurrenceFilterInput = {
   latmin?: number | undefined;
   latmax?: number | undefined;
   environment?: string | undefined;
+  formation?: string | undefined;
+  country?: string | undefined;
 };
 
 /** True when the call carries at least one real search selector (not just pagination). */
@@ -631,36 +657,34 @@ function hasOccurrenceFilter(input: OccurrenceFilterInput): boolean {
     input.lngmax != null ||
     input.latmin != null ||
     input.latmax != null ||
-    input.environment != null
+    input.environment != null ||
+    input.country != null ||
+    input.formation != null
   );
 }
 
 /**
  * Page-position guidance, or `undefined` when this page reached the end of the
- * match set. `shown` is what this page delivers (inline rows, or every staged
- * row on a spill) and `pulled` what PBDB returned for it; the next offset is
- * `offset + shown` either way. Advancing `offset` is the primary next step —
- * "raise limit" only appears when `limit` (not the per-call cap, the server-wide
- * cap, or the inline budget) is what bounded the page, so it can never fire at
- * the maximum; a `limit` above the per-call cap is named instead.
+ * match set. `shown` counts only the delivered inline rows; the next offset is
+ * `offset + shown`, independent of staging. Advancing `offset` is the primary next step —
+ * "raise limit" only appears when the requested limit bound the page below the
+ * input ceiling; a lower configured page cap is disclosed instead.
  */
 function nextPageNotice(page: {
   offset: number;
   shown: number;
-  pulled: number;
   total: number;
   limit: number;
   cap: number;
 }): string | undefined {
-  const { offset, shown, pulled, total, limit, cap } = page;
+  const { offset, shown, total, limit, cap } = page;
   const last = offset + shown;
   if (shown === 0 || last >= total) return;
   const parts = [`Showing occurrences ${offset + 1}–${last} of ${total}.`];
-  if (shown < pulled) parts.push(cutPageNotice(shown, pulled));
   parts.push(`Advance offset to ${last} for the next page.`);
-  if (limit > MAX_PAGE) {
-    parts.push(overCapNotice(limit, 'occurrences'));
-  } else if (shown === pulled && cap === limit && limit < MAX_PAGE) {
+  if (limit > cap) {
+    parts.push(overCapNotice(limit, 'occurrences', cap));
+  } else if (cap === limit && limit < MAX_PAGE) {
     parts.push(`Or raise limit (max ${MAX_PAGE}) to pull more per page.`);
   }
   return parts.join(' ');
@@ -683,22 +707,13 @@ function emptyPageNotice(input: OccurrenceFilterInput & { offset: number }, tota
 
 /** Build an empty-result notice echoing the filters. */
 function emptyNotice(input: OccurrenceFilterInput): string {
-  const taxon =
-    input.base_name ??
-    input.taxon_name ??
-    (input.base_id != null ? `taxon_no ${input.base_id}` : 'any taxon');
-  const when =
-    input.interval ??
-    (input.max_ma != null ? `${input.max_ma}–${input.min_ma ?? 0} Ma` : 'all time');
-  const where = input.collection_no != null ? ` in collection ${input.collection_no}` : '';
-  const collTip =
-    input.collection_no != null
-      ? ' Confirm the collection_no with paleobiology_search_collections,'
-      : '';
-  return (
-    `No occurrences matched ${taxon} in ${when}${where}.${collTip} Verify the taxon with ` +
-    'paleobiology_get_taxon, widen the interval or bounding box, or drop the environment filter.'
-  );
+  const selectors = Object.entries(input)
+    .filter(
+      ([key, value]) => !['limit', 'offset', 'canvas_id'].includes(key) && value !== undefined,
+    )
+    .map(([key, value]) => `${key}=${value}`)
+    .join(', ');
+  return `No occurrences matched ${selectors}. Verify the taxon with paleobiology_get_taxon, a collection_no with paleobiology_search_collections, or widen these filters.`;
 }
 
 /** Render an occurrence's age, echoing interval(s) and Ma. */

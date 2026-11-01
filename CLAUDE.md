@@ -2,15 +2,17 @@
 
 **Server:** paleobiology-mcp-server
 **Version:** 0.4.0
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.18`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
+**MCP SDK:** `@modelcontextprotocol/server` ^2.4.0
 **Zod:** ^4.6.7
+
+**Dependency hold:** Keep `@duckdb/node-api` on `^1.5.6-r.2` until [mcp-ts-core#800](https://github.com/cyanheads/mcp-ts-core/issues/800) ships: DuckDB 2 currently rejects supported `SHOW <table>` canvas queries.
 
 > Fossil biodiversity over the Paleobiology Database (PBDB, paleobiodb.org/data1.2) —
 > keyless, CC BY 4.0. Six domain `paleobiology_*` tools, plus three dataframe tools listed
 > only when DataCanvas is on (`CANVAS_PROVIDER_TYPE=duckdb`), and three `paleobiology://`
-> resources: `get_taxon` (name/id → accepted name, rank, classification, FAD/LAD range — the
+> data resources plus the published guide: `get_taxon` (name/id → matched and accepted identities, classification, FAD/LAD range — the
 > name-resolution gateway), `search_occurrences` (the flagship; large results spill to a
 > DataCanvas when it is on, read via `dataframe_describe` then `dataframe_query`, freed via the
 > opt-in `dataframe_drop`), `get_diversity` (origination/extinction curve through time),
@@ -72,7 +74,7 @@ import { getPbdbService, isNotFoundError } from '@/services/pbdb/pbdb-service.js
 
 export const getTaxonTool = tool('paleobiology_get_taxon', {
   title: 'paleobiology-mcp-server: get taxon record and fossil range',
-  description: 'Resolve a taxon by name or integer taxon_no to its accepted name, rank, classification, and FAD/LAD range.',
+  description: 'Resolve matched and accepted taxon identities, status, classification, and FAD/LAD range by name or taxon_no.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     // blankAsUnset: a form client's "" for an untouched field reads as omitted.
@@ -131,7 +133,7 @@ import { getPbdbService, isNotFoundError } from '@/services/pbdb/pbdb-service.js
 export const taxonResource = resource('paleobiology://taxon/{taxon_no}', {
   name: 'Taxon record',
   title: 'paleobiology-mcp-server: taxon record',
-  description: 'Read one taxon by its integer taxon_no — accepted name, rank, classification, FAD/LAD range.',
+  description: 'Read matched and accepted identities, status, classification, and FAD/LAD range by integer taxon_no.',
   mimeType: 'application/json',
   params: z.object({
     taxon_no: z.string().regex(/^\d+$/, 'taxon_no must be a positive integer.').describe('PBDB taxon id (a bare positive integer).'),
@@ -168,7 +170,7 @@ import { normalizeEnv, parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 const ServerConfigSchema = z.object({
   pbdbBaseUrl: z.string().url().default('https://paleobiodb.org/data1.2').describe('Base URL for the PBDB REST API (no trailing slash).'),
   pbdbTimeoutMs: z.coerce.number().int().positive().default(30_000).describe('Per-request timeout in ms for PBDB calls.'),
-  pbdbMaxOccurrences: z.coerce.number().int().positive().default(1000).describe('Hard cap on occurrence or collection rows pulled per call. The tools already pull at most 500 per call, so only a lower value takes effect.'),
+  pbdbMaxOccurrences: z.coerce.number().int().positive().default(1000).describe('Inline occurrence/collection page cap. Whole-set occurrence staging has a separate 50,000-row bound.'),
   dataframeDropEnabled: z.stringbool().default(false).describe('When true, enables paleobiology_dataframe_drop (DataCanvas must also be on). Off by default.'),
 });
 
@@ -194,7 +196,7 @@ export function isDataframeDropEnabled(): boolean {
 }
 ```
 
-`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`PBDB_TIMEOUT_MS`) not the path (`pbdbTimeoutMs`). Throws `ConfigurationError`, which the framework prints as a clean startup banner — but only from `setup()`. A parse at module load (a tool-registration gate) runs before the banner handler exists and dies on a raw stack, so gates read their one field with `safeParse` and leave the full parse to `setup()`. The DataCanvas gate reads the framework's own `config.canvas.providerType`, already parsed at package import.
+`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`PBDB_TIMEOUT_MS`) not the path (`pbdbTimeoutMs`). Throws `ConfigurationError`, which the framework prints as a clean startup banner — but only from `setup()`. A parse at module load runs before the banner handler exists, so gates read only their environment flag and leave full validation to startup. The entry point loads `.env` and defaults DataCanvas to `duckdb` before registration; `CANVAS_PROVIDER_TYPE=none` disables it.
 
 For env booleans use `z.stringbool()`, never `z.coerce.boolean()` — `Boolean("false")` is `true`, so a coerced flag can't be disabled through the environment. `z.stringbool()` parses `true/false/1/0/yes/no/on/off` and rejects anything else, so `=false` actually disables.
 
@@ -304,6 +306,7 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 src/
   index.ts                              # createApp() entry point
   config/
+    canvas-default.ts                   # CANVAS_PROVIDER_TYPE defaults to duckdb (first import in index.ts)
     server-config.ts                    # Server-specific env vars (Zod schema)
   services/
     [domain]/
@@ -335,6 +338,8 @@ src/
 
 Skills are modular instructions in `framework-skills/` at the project root. Read them directly when a task matches — e.g., `framework-skills/add-tool/SKILL.md` when adding a tool. `bun run list-skills` prints the full registry. The directory is deliberately not `skills/`: Claude Code and Codex auto-load a plugin's root `skills/`, so a server that ships `.claude-plugin/` or `.codex-plugin/` would hand these development skills to every agent that installs it. Keep `skills/` free for skills meant for those agents.
 
+Root `skills/` is author-managed guidance for agents calling the server, separate from development guidance in `framework-skills/`. It ships through plugins and MCPB as-is, and through npm and Docker when explicitly included. `createApp({ skills: 'skills' })` serves it over MCP; `lint:packaging` validates it.
+
 **Agent skill directory:** Copy skills into the directory your agent discovers (Claude Code: `.claude/skills/`, others: equivalent). Skills then load as context without referencing `framework-skills/` paths. After framework updates, run the `maintenance` skill — Phase B re-syncs the agent directory.
 
 Available skills:
@@ -347,6 +352,7 @@ Available skills:
 | `add-app-tool` | Scaffold an MCP App tool + paired UI resource |
 | `add-resource` | Scaffold a new resource definition |
 | `add-prompt` | Scaffold a new prompt definition |
+| `add-skill` | Author an agent-facing skill in root `skills/`, validate it, and deliver it through plugins, bundles, npm, Docker, and MCP |
 | `add-service` | Scaffold a new service integration |
 | `add-test` | Scaffold test file for a tool, resource, or service |
 | `field-test` | Exercise tools/resources/prompts with real inputs, verify behavior, report issues |
@@ -394,7 +400,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run audit:fix` | `bun audit fix` — upgrade vulnerable packages to the lowest safe version within existing ranges (`--dry-run` previews, `--latest` rewrites ranges). First response when `devcheck` flags a transitive advisory; then `bun update <name>`, then `bun dedupe` |
 | `bun run audit:refresh` | Delete `bun.lock` and reinstall. Last resort after `audit:fix`, `bun update <name>`, and `bun dedupe` — re-resolves every ranged dep (the framework pin included) and rewrites the lockfile as `lockfileVersion: 2` |
 | `bun run lint:mcp` | Run the MCP definition linter standalone (rule catalog: `api-linter` skill) |
-| `bun run lint:packaging` | Packaging surface checks — `server.json`/`manifest.json` env-var parity (run by devcheck) |
+| `bun run lint:packaging` | Packaging checks — env-var parity, bundle exclusions, plugin manifests, and published skills (run by devcheck) |
 | `bun run list-skills` | Print the skill registry |
 | `bun run tree` | Generate directory structure doc |
 | `bun run format` | Auto-fix formatting (safe fixes only) |
@@ -412,7 +418,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 
 ## Bundling
 
-`bun run bundle` produces a `.mcpb` extension bundle for one-click install in Claude Desktop. The pack step is followed by `scripts/clean-mcpb.ts`, which prunes dev dependencies (`mcpb clean`) and strips two classes of `node_modules/**` content that root-anchored `.mcpbignore` patterns cannot reach: dependency-shipped agent docs (`framework-skills/`, `skills/`, `.claude/`, `.agents/`, `SKILL.md`) and platform-specific native bindings, which would otherwise lock the bundle to the platform it was packed on. A server using DataCanvas therefore ships a portable bundle without the DuckDB native — `@duckdb/node-api` is an optional peer loaded lazily, so canvas tools report an actionable install hint and every other tool works normally. MCPB is stdio-only — HTTP and Cloudflare Workers deployments are unaffected. Consumers who don't need it can delete `manifest.json` and `.mcpbignore`; `lint:packaging` skips cleanly.
+`bun run bundle` produces a `.mcpb` extension bundle for Claude Desktop. Root-anchored `.mcpbignore` patterns exclude source, tests, docs, caches, developer guidance, and plugin manifests; root `skills/` ships intentionally. `scripts/clean-mcpb.ts` then removes development dependencies, package-root agent documentation, platform-specific DuckDB bindings, node-gyp intermediate output, and build-only framework files. Executable SDK `dist/ext/skills/` modules and compiled native addons remain. DataCanvas needs a separately installed DuckDB binding in the portable bundle; other tools work normally. `lint:packaging` verifies exclusions and the cleaned archive.
 
 **Adding an env var requires both files:** `server.json` (registry discovery, `environmentVariables[]`) and `manifest.json` (bundle install UX, `mcp_config.env` + `user_config`). `lint:packaging` (run by `devcheck`) verifies the env var names match, that every `user_config` option is wired into `mcp_config.env` as `"X": "${user_config.X}"` (the host substitutes nothing else — `"${X}"` reaches the server as that literal string), and that an optional string option carries `"default": ""`.
 

@@ -9,7 +9,9 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { blankAsUnset } from '@/mcp-server/tools/blank-as-unset.js';
+import { CountryFilterSchema } from '@/mcp-server/tools/country-filter.js';
 import { oneLine } from '@/mcp-server/tools/one-line.js';
+import { ENVIRONMENTS } from '@/mcp-server/tools/paging.js';
 import { emitNotice, ignoredFilterNotice } from '@/mcp-server/tools/pbdb-notices.js';
 import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
 import type { DiversityFilter } from '@/services/pbdb/types.js';
@@ -30,11 +32,13 @@ const BinSchema = z
     originations: z
       .number()
       .describe(
-        'Taxa whose first appearance is in this bin (new FADs, including bin-only singletons).',
+        'First appearances within the selected occurrence set, including bin-only singletons; selection boundaries can truncate ranges.',
       ),
     extinctions: z
       .number()
-      .describe('Taxa whose last appearance is in this bin (LADs, including bin-only singletons).'),
+      .describe(
+        'Last appearances within the selected occurrence set, including bin-only singletons; these are not established biological extinctions.',
+      ),
     range_through: z
       .number()
       .describe('Taxa whose range crosses both boundaries of this bin (present before and after).'),
@@ -57,7 +61,7 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
       .positive()
       .optional()
       .describe(
-        'Clade-inclusive taxon to count, by PBDB taxon id — the taxon_no from paleobiology_get_taxon, or accepted_no on an occurrence row. Same semantics as base_name, but unambiguous where a name is not (homonyms, synonyms, unresolved spellings). Supply this or base_name (exactly one is required, never both).',
+        'Clade-inclusive taxon to count, by PBDB taxon id — use accepted_no from paleobiology_get_taxon or an occurrence row for an accepted-clade search. Supply this or base_name (exactly one is required, never both).',
       ),
     count: blankAsUnset(z.enum(COUNTS).default('genera')).describe(
       'What to count per bin: "genera" (default), "species", or "families".',
@@ -65,6 +69,49 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     resolution: blankAsUnset(z.enum(RESOLUTIONS).default('period')).describe(
       'Bin resolution: "period" (default, coarse), "epoch", or "age" (finest).',
     ),
+    recent: z
+      .boolean()
+      .default(false)
+      .describe(
+        'When true, extend taxa PBDB knows are extant to the present instead of ending their ranges at the latest selected fossil. Default false preserves fossil-only counts; selection-boundary effects still apply.',
+      ),
+    country: blankAsUnset(CountryFilterSchema.optional()).describe(
+      'PBDB country or continent codes, e.g. "US", "NOA,^US", or "!EUR,^IS".',
+    ),
+    formation: blankAsUnset(z.string().optional()).describe(
+      'Stored formation name, e.g. "Hell Creek"; comma lists and SQL wildcards are passed unchanged. Do not append Formation unless it is part of the stored name.',
+    ),
+    environment: blankAsUnset(z.enum(ENVIRONMENTS).optional()).describe(
+      'Depositional environment: marine, terrestrial, or freshwater (lacustrine + fluvial).',
+    ),
+    lngmin: z
+      .number()
+      .min(-180)
+      .max(180)
+      .optional()
+      .describe(
+        'Western longitude edge in degrees; requires lngmax. A pair may cross the antimeridian.',
+      ),
+    lngmax: z
+      .number()
+      .min(-180)
+      .max(180)
+      .optional()
+      .describe('Eastern longitude edge in degrees; requires lngmin.'),
+    latmin: z
+      .number()
+      .min(-90)
+      .max(90)
+      .optional()
+      .describe('Southern latitude edge in degrees; valid alone as a half-plane.'),
+    latmax: z
+      .number()
+      .min(-90)
+      .max(90)
+      .optional()
+      .describe(
+        'Northern latitude edge in degrees; valid alone as a half-plane. PBDB normalizes inverted latitude bounds.',
+      ),
     interval: blankAsUnset(z.string().optional()).describe(
       'Named geologic interval bounding the span, e.g. "Mesozoic". Alternative to max_ma/min_ma.',
     ),
@@ -96,7 +143,7 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
       .string()
       .optional()
       .describe(
-        'Guidance when the clade or span produced no bins, or when the taxon name could not be resolved and was ignored.',
+        'Sampled-turnover interpretation, effective extant-range policy, selection-boundary guidance, empty-result selectors and ignored-filter warnings.',
       ),
     attribution: z.string().describe('CC-BY data attribution for the Paleobiology Database.'),
   },
@@ -104,6 +151,13 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     attribution: { label: 'Source' },
   },
   errors: [
+    {
+      reason: 'incomplete_bbox',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'Exactly one of lngmin and lngmax was supplied.',
+      recovery:
+        'Supply both lngmin and lngmax, or drop the longitude edge. A lone latmin or latmax is valid.',
+    },
     {
       reason: 'missing_filter',
       code: JsonRpcErrorCode.InvalidParams,
@@ -136,6 +190,11 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
   ],
 
   async handler(input, ctx) {
+    if ((input.lngmin == null) !== (input.lngmax == null)) {
+      throw ctx.fail('incomplete_bbox', 'A longitude box needs both lngmin and lngmax.', {
+        ...ctx.recoveryFor('incomplete_bbox'),
+      });
+    }
     if (input.base_name == null && input.base_id == null) {
       throw ctx.fail(
         'missing_filter',
@@ -161,6 +220,14 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
       count: input.count,
       resolution: input.resolution,
     };
+    if (input.recent) filter.recent = true;
+    if (input.country) filter.country = input.country;
+    if (input.formation) filter.formation = input.formation;
+    if (input.environment) filter.environment = input.environment;
+    if (input.lngmin != null) filter.lngmin = input.lngmin;
+    if (input.lngmax != null) filter.lngmax = input.lngmax;
+    if (input.latmin != null) filter.latmin = input.latmin;
+    if (input.latmax != null) filter.latmax = input.latmax;
     if (input.base_name) filter.baseName = input.base_name;
     if (input.base_id != null) filter.baseId = input.base_id;
     if (input.interval) filter.interval = input.interval;
@@ -183,12 +250,22 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     // An unresolvable base_name and a clade with no data in the span both return
     // zero bins; only PBDB's warning tells them apart.
     const clade = input.base_name ?? `taxon_no ${input.base_id}`;
+    const selectors = Object.entries(input)
+      .filter(([key, value]) => key !== 'base_name' && key !== 'base_id' && value !== undefined)
+      .map(([key, value]) => `${key}=${value}`)
+      .join(', ');
+    const oldest = bins[0];
+    const youngest = bins.at(-1);
+    const edges =
+      oldest && youngest
+        ? `The oldest returned bin (${oldest.interval}) originations and youngest returned bin (${youngest.interval}) extinctions may be affected by selection boundaries.`
+        : 'Selection boundaries can truncate ranges.';
     emitNotice(
       ctx,
       ignoredFilterNotice(warnings),
+      `Originations and extinctions are first/last appearances within the selected occurrence set, not established biological events. ${edges} recent=${input.recent}: ${input.recent ? 'known extant taxa range through to the present; other boundary effects remain' : 'ranges end at the latest selected fossil, including known extant taxa'}.`,
       bins.length === 0
-        ? `No diversity bins for "${clade}" over the requested span. Verify the taxon with ` +
-            'paleobiology_get_taxon and confirm the interval/Ma range overlaps its fossil range.'
+        ? `No diversity bins for "${clade}" over the requested span. Verify the taxon with paleobiology_get_taxon and confirm the interval/Ma range overlaps its fossil range. Applied selectors: ${selectors}.`
         : undefined,
     );
     return { bins };

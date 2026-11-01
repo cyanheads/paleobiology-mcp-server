@@ -70,6 +70,150 @@ describe('paleobiology_get_diversity', () => {
     getDiversity.mockReset();
   });
 
+  it('characterizes sampled turnover without changing the counts', async () => {
+    getDiversity.mockResolvedValue({ bins: [cretaceousBin] });
+    const ctx = createMockContext({ errors: getDiversityTool.errors });
+    const result = await getDiversityTool.handler(
+      getDiversityTool.input.parse({ base_name: 'Dinosauria' }),
+      ctx,
+    );
+    expect(result.bins[0]).toMatchObject({ originations: 1276, extinctions: 1328 });
+  });
+
+  it.each([false, true])(
+    'discloses sampled turnover and recent=%s on both surfaces',
+    async (recent) => {
+      getDiversity.mockResolvedValue({ bins: [cretaceousBin, triassicBin] });
+      const result = await runToolContract(getDiversityTool, { base_name: 'Dinosauria', recent });
+      expect(result.isError).toBeFalsy();
+      const text = renderText(result.content);
+      const notice = String((result.structuredContent as { notice: string }).notice);
+      for (const value of [
+        'selected occurrence set',
+        'Triassic',
+        'Cretaceous',
+        `recent=${recent}`,
+        'not established biological events',
+      ]) {
+        expect(notice).toContain(value);
+        expect(text).toContain(value);
+      }
+      if (recent)
+        expect(getDiversity).toHaveBeenCalledWith(
+          expect.objectContaining({ recent: true }),
+          expect.anything(),
+        );
+      else expect(getDiversity.mock.calls[0]![0]).not.toHaveProperty('recent');
+    },
+  );
+
+  it('forwards normalized geographic and environmental filters without changing formation names', async () => {
+    getDiversity.mockResolvedValue({ bins: [] });
+    const ctx = createMockContext({ errors: getDiversityTool.errors });
+    await getDiversityTool.handler(
+      getDiversityTool.input.parse({
+        base_name: 'Bivalvia',
+        country: ' noa , ^us ',
+        formation: 'Some Group Formation',
+        environment: 'freshwater',
+        lngmin: 170,
+        lngmax: -170,
+        latmin: 60,
+        min_ma: 66,
+      }),
+      ctx,
+    );
+    expect(getDiversity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        country: 'NOA,^US',
+        formation: 'Some Group Formation',
+        environment: 'freshwater',
+        lngmin: 170,
+        lngmax: -170,
+        latmin: 60,
+        minMa: 66,
+      }),
+      expect.anything(),
+    );
+    const notice = String(getEnrichment(ctx).notice);
+    for (const value of [
+      'NOA,^US',
+      'Some Group Formation',
+      'freshwater',
+      'lngmin=170',
+      'lngmax=-170',
+      'latmin=60',
+      'min_ma=66',
+    ])
+      expect(notice).toContain(value);
+    expect(notice).not.toContain('all time');
+    expect(notice).not.toContain('max_ma=');
+    expect(notice).toContain('recent=false');
+  });
+
+  it('rejects a lone longitude edge with recovery before service I/O on both surfaces', async () => {
+    const result = await runToolContract(getDiversityTool, { base_name: 'Bivalvia', lngmin: 10 });
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        data: { reason: 'incomplete_bbox', recovery: { hint: expect.stringContaining('lngmax') } },
+      },
+    });
+    expect(renderText(result.content)).toContain('lngmax');
+    expect(getDiversity).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed country syntax before service I/O on both surfaces', async () => {
+    const result = await runToolContract(getDiversityTool, {
+      base_name: 'Bivalvia',
+      country: 'USA',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { data: { reason: 'invalid_arguments' } },
+    });
+    expect(renderText(result.content)).toContain('country');
+    expect(getDiversity).not.toHaveBeenCalled();
+  });
+
+  it('accepts lone and inverted latitude bounds and blank optional filters', async () => {
+    getDiversity.mockResolvedValue({ bins: [] });
+    for (const bounds of [{ latmax: -60 }, { latmin: 80, latmax: 10 }]) {
+      const result = await runToolContract(getDiversityTool, {
+        base_name: 'Bivalvia',
+        country: '',
+        formation: '  ',
+        environment: '' as never,
+        ...bounds,
+      });
+      expect(result.isError).toBeFalsy();
+      expect(getDiversity).toHaveBeenLastCalledWith(
+        expect.objectContaining(bounds),
+        expect.anything(),
+      );
+      expect((result.structuredContent as { notice: string }).notice).toContain('recent=false');
+    }
+  });
+
+  it.each([{ bins: [] }, { bins: [cretaceousBin] }])(
+    'discloses recent policy for empty and one-bin curves on both surfaces',
+    async ({ bins }) => {
+      getDiversity.mockResolvedValue({ bins });
+      const result = await runToolContract(getDiversityTool, {
+        base_name: 'Bivalvia',
+        recent: true,
+      });
+      expect(result.isError).toBeFalsy();
+      const notice = String((result.structuredContent as { notice: string }).notice);
+      expect(notice).toContain('recent=true');
+      expect(renderText(result.content)).toContain('recent=true');
+      if (bins.length)
+        expect(notice).toContain(
+          'oldest returned bin (Cretaceous) originations and youngest returned bin (Cretaceous) extinctions',
+        );
+      else expect(notice).toContain('Selection boundaries can truncate ranges');
+    },
+  );
+
   it('returns the full bin set inline and conforms to the output schema', async () => {
     getDiversity.mockResolvedValue({ bins: [cretaceousBin] });
     const ctx = createMockContext({ errors: getDiversityTool.errors });

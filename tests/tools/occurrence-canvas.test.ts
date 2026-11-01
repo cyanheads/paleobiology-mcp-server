@@ -55,17 +55,25 @@ async function capCanvasesAt(max: number): Promise<void> {
 
 /** Answer every occurrence search with these rows and upstream metadata. */
 function serve(rows: Occurrence[], meta: PbdbSearchMeta = { recordsFound: rows.length }): void {
-  vi.spyOn(pbdb.getPbdbService(), 'searchOccurrences').mockImplementation(async () => ({
-    rows,
-    meta,
-  }));
+  vi.spyOn(pbdb.getPbdbService(), 'searchOccurrences')
+    .mockClear()
+    .mockImplementation(async (filter) => ({
+      rows: rows.slice(filter.offset, filter.offset + filter.limit),
+      meta,
+    }));
+  vi.spyOn(pbdb.getPbdbService(), 'searchOccurrenceSet')
+    .mockClear()
+    .mockImplementation(async () => ({
+      rows,
+      meta,
+    }));
 }
 
-/** Run a 500-row search that spills; returns its parsed handle and canvas id. */
+/** Request a 100-row page of 500 matches; returns the staged handle and canvas id. */
 async function stageSpill() {
   serve(wideRows(500));
   const handle = searchOccurrencesTool.output.parse(
-    (await runToolContract(searchOccurrencesTool, { base_name: 'Dinosauria', limit: 500 }))
+    (await runToolContract(searchOccurrencesTool, { base_name: 'Dinosauria', limit: 100 }))
       .structuredContent,
   );
   return { handle, canvasId: CanvasIdSchema.parse(handle.canvas_id) };
@@ -77,7 +85,7 @@ async function query<Row>(canvasId: string, sql: string) {
     .structuredContent as { rows: Row[]; row_count: number; notice?: string };
 }
 
-/** Rows wide enough that 500 of them overflow the inline budget and spill. */
+/** Wide records exercise complete inline rows and staged string columns. */
 const wideRows = (count: number): Occurrence[] =>
   Array.from({ length: count }, (_, i) => ({
     occurrence_no: i + 1,
@@ -119,7 +127,7 @@ it('preserves fractional ages and coordinates after an integral preview', async 
 
   const staged = await runToolContract(searchOccurrencesTool, {
     base_name: 'Dinosauria',
-    limit: 500,
+    limit: 100,
   });
   expect(staged.isError).not.toBe(true);
   const handle = searchOccurrencesTool.output.parse(staged.structuredContent);
@@ -151,7 +159,7 @@ it('retains sparse columns and nested classification first populated after the p
   serve(rows);
   const staged = await runToolContract(searchOccurrencesTool, {
     base_name: 'Dinosauria',
-    limit: 500,
+    limit: 100,
   });
   expect(staged.isError).not.toBe(true);
   const handle = searchOccurrencesTool.output.parse(staged.structuredContent);
@@ -218,10 +226,35 @@ it('puts declared canvas-disabled recovery on both client surfaces', async () =>
   }
 });
 
+it('omits unspecified ranks from inline and staged classification', async () => {
+  serve([
+    pbdb.normalizeOccurrence({ occurrence_no: '1', family: 'NO_FAMILY_SPECIFIED' }),
+    pbdb.normalizeOccurrence({ occurrence_no: '2', family: 'Tyrannosauridae' }),
+  ]);
+  const result = await runToolContract(searchOccurrencesTool, {
+    base_name: 'Dinosauria',
+    limit: 1,
+  });
+  const handle = searchOccurrencesTool.output.parse(result.structuredContent);
+  expect(handle.occurrences).toEqual([{ occurrence_no: 1 }]);
+  expect(JSON.stringify(result.content)).not.toContain('NO_FAMILY_SPECIFIED');
+  expect(
+    await query(
+      CanvasIdSchema.parse(handle.canvas_id),
+      `SELECT occurrence_no, json_extract_string(classification, '$.family') AS family FROM ${handle.table_name} ORDER BY occurrence_no`,
+    ),
+  ).toMatchObject({
+    rows: [
+      { occurrence_no: '1', family: null },
+      { occurrence_no: '2', family: 'Tyrannosauridae' },
+    ],
+  });
+});
+
 describe('canvas slots (#32)', () => {
-  it('holds no canvas slot for pages that fit inline, even at a cap of 1', async () => {
+  it('holds no canvas slot for complete pages, even at a cap of 1', async () => {
     await capCanvasesAt(1);
-    serve(fiveRexes, { recordsFound: 22 });
+    serve(fiveRexes);
 
     for (let call = 0; call < 2; call++) {
       const result = await runToolContract(searchOccurrencesTool, {
@@ -273,7 +306,7 @@ describe('canvas slots (#32)', () => {
 
     const failed = await runToolContract(searchOccurrencesTool, {
       base_name: 'Dinosauria',
-      limit: 500,
+      limit: 100,
     });
     expect(failed.isError).toBe(true);
     expect(JSON.stringify(failed.structuredContent)).toContain('NOT NULL');
@@ -282,7 +315,7 @@ describe('canvas slots (#32)', () => {
     serve(wideRows(500));
     const retried = await runToolContract(searchOccurrencesTool, {
       base_name: 'Dinosauria',
-      limit: 500,
+      limit: 100,
     });
     expect(retried.isError).toBeFalsy();
     expect(canvas.countForTenant(context)).toBe(1);
@@ -316,7 +349,7 @@ describe('canvas slots (#32)', () => {
       (
         await runToolContract(searchOccurrencesTool, {
           base_name: 'Dinosauria',
-          limit: 300,
+          limit: 100,
           canvas_id: canvasId,
         })
       ).structuredContent,
@@ -325,6 +358,41 @@ describe('canvas slots (#32)', () => {
     const recount = await query(canvasId, `SELECT COUNT(*) AS n FROM ${replaced.table_name}`);
     expect(recount).toMatchObject({ rows: [{ n: '300' }] });
     expect(canvas.countForTenant(context)).toBe(1);
+  });
+
+  it('preserves the committed occurrence table when replacement fails', async () => {
+    const { handle, canvasId } = await stageSpill();
+    const replacement = wideRows(300);
+    replacement[299] = { occurrence_no: null as never };
+    serve(replacement);
+
+    const failed = await runToolContract(searchOccurrencesTool, {
+      base_name: 'Dinosauria',
+      limit: 100,
+      canvas_id: canvasId,
+    });
+    expect(failed.isError).toBe(true);
+    expect(JSON.stringify(failed.structuredContent)).toContain('NOT NULL');
+    expect(await query(canvasId, `SELECT COUNT(*) AS n FROM ${handle.table_name}`)).toMatchObject({
+      rows: [{ n: '500' }],
+    });
+    expect(canvas.countForTenant(context)).toBe(1);
+  });
+
+  it('leaves a held canvas untouched on later pages', async () => {
+    const { handle, canvasId } = await stageSpill();
+    serve(wideRows(300));
+    const result = await runToolContract(searchOccurrencesTool, {
+      base_name: 'Dinosauria',
+      limit: 50,
+      offset: 100,
+      canvas_id: canvasId,
+    });
+    expect(result.structuredContent).toMatchObject({ spilled: false, row_count: 50 });
+    expect(pbdb.getPbdbService().searchOccurrenceSet).not.toHaveBeenCalled();
+    expect(await query(canvasId, `SELECT COUNT(*) AS n FROM ${handle.table_name}`)).toMatchObject({
+      rows: [{ n: '500' }],
+    });
   });
 
   it('settles a cancelled spill as cancelled, never as a degraded success', async () => {
@@ -347,95 +415,52 @@ describe('canvas slots (#32)', () => {
 });
 
 describe('dataframe_query continuation (#23)', () => {
-  it('walks a budget-cut SELECT * by the LIMIT/OFFSET its notice names, until the stop its notice names', async () => {
+  it('returns every wide row without a second byte cut', async () => {
     const { handle, canvasId } = await stageSpill();
     const ordered = `SELECT * FROM ${handle.table_name} ORDER BY occurrence_no`;
     const run = (sql: string) => query<{ occurrence_no: string }>(canvasId, sql);
 
     const first = await run(ordered);
     expect(first.row_count).toBe(500);
-    const limit = Number(/set LIMIT (\d+)/.exec(first.notice ?? '')?.[1]);
-    expect(limit).toBe(first.rows.length);
-    expect(first.notice).toContain(`(OFFSET ${limit} if it has none)`);
-    // The walk ends on the rule the notice states, not on a convention the test assumes.
-    const stopBelow = Number(
-      /until a page returns fewer than (\d+) rows/.exec(first.notice ?? '')?.[1],
+    expect(first.rows.map((r) => r.occurrence_no)).toEqual(
+      Array.from({ length: 500 }, (_, i) => String(i + 1)),
     );
-    expect(stopBelow).toBe(limit);
-
-    const seen = first.rows.map((r) => r.occurrence_no);
-    let offset = limit;
-    let pages = 1;
-    for (;;) {
-      const page = await run(`${ordered} LIMIT ${limit} OFFSET ${offset}`);
-      seen.push(...page.rows.map((r) => r.occurrence_no));
-      pages += 1;
-      const raise = /raise the query's OFFSET by (\d+)/.exec(page.notice ?? '')?.[1];
-      if (raise) {
-        offset += Number(raise);
-        continue;
-      }
-      if (page.rows.length < stopBelow) break;
-      offset += page.rows.length;
-    }
-    expect(pages).toBeGreaterThan(2);
-
-    const direct = await run(
-      `SELECT occurrence_no FROM ${handle.table_name} ORDER BY occurrence_no`,
-    );
-    expect(direct.notice).toBeUndefined();
-    expect(seen).toEqual(direct.rows.map((r) => r.occurrence_no));
+    expect(first.notice).toBeUndefined();
   });
 
-  it("ends a walk over a query with its own LIMIT at that query's window", async () => {
+  it('preserves an explicit SQL LIMIT and OFFSET without byte cutting', async () => {
     const { handle, canvasId } = await stageSpill();
     const ordered = `SELECT * FROM ${handle.table_name} ORDER BY occurrence_no`;
     const run = (sql: string) => query<{ occurrence_no: string }>(canvasId, sql);
 
     const first = await run(`${ordered} LIMIT 300 OFFSET 50`);
-    const shown = first.rows.length;
-    expect(shown).toBeGreaterThan(0);
-    expect(shown).toBeLessThan(300);
-    expect(first.notice).toContain(
-      `raise the query's OFFSET by ${shown} (OFFSET ${shown} if it has none) for each next page, ` +
-        `until a page returns fewer than ${shown} rows. If the query had its own LIMIT, stop once ` +
-        "the pages read add up to it, lowering the last page's LIMIT to the rows that remain.",
+    expect(first.rows.map((r) => r.occurrence_no)).toEqual(
+      Array.from({ length: 300 }, (_, i) => String(51 + i)),
     );
-
-    // Follow the notice: pages of `shown` from OFFSET 50 + shown, the last one lowered.
-    const seen = first.rows.map((r) => r.occurrence_no);
-    let offset = 50 + shown;
-    while (seen.length < 300) {
-      const page = await run(
-        `${ordered} LIMIT ${Math.min(shown, 300 - seen.length)} OFFSET ${offset}`,
-      );
-      seen.push(...page.rows.map((r) => r.occurrence_no));
-      offset += page.rows.length;
-    }
-    expect(seen).toEqual(Array.from({ length: 300 }, (_, i) => String(51 + i)));
+    expect(first.notice).toBeUndefined();
   });
 });
 
 describe('canvas cap recovery (#35)', () => {
   const CAP_RECOVERY =
-    'Pass a canvas_id you already hold to restage this page onto that canvas, replacing its occurrence table, or lower limit so the page fits inline and stages nothing (the message names a limit that fits).';
+    'Pass a canvas_id you already hold to replace its occurrence table, or narrow the matching set until it fits in the requested page.';
 
   it('names only levers that work here when a spilling page meets the canvas cap', async () => {
     await capCanvasesAt(1);
-    const { handle: held, canvasId } = await stageSpill();
-    const fits = held.occurrences.length;
+    const { canvasId } = await stageSpill();
     expect(canvas.countForTenant(context)).toBe(1);
 
     serve(wideRows(500));
     const refused = await runToolContract(searchOccurrencesTool, {
       base_name: 'Dinosauria',
-      limit: 500,
+      limit: 100,
     });
     expect(refused.isError).toBe(true);
     expect(refused.structuredContent).toMatchObject({
       error: {
         code: JsonRpcErrorCode.RateLimited,
-        message: `No canvas slot is free to stage this page: the active canvas cap is reached. A limit of ${fits} or less fits this page inline.`,
+        message:
+          'No canvas slot is free to stage the matching occurrences: the active canvas cap is reached.',
         data: {
           reason: 'canvas_capacity_exhausted',
           retryable: true,
@@ -455,7 +480,7 @@ describe('canvas cap recovery (#35)', () => {
     serve(wideRows(500));
     const restaged = await runToolContract(searchOccurrencesTool, {
       base_name: 'Dinosauria',
-      limit: 500,
+      limit: 100,
       canvas_id: canvasId,
     });
     expect(restaged.isError).toBeFalsy();
@@ -465,14 +490,22 @@ describe('canvas cap recovery (#35)', () => {
       row_count: 500,
     });
 
-    // Lever 2: the limit the message names fits inline and stages nothing.
-    serve(wideRows(fits), { recordsFound: 500 });
-    const inline = await runToolContract(searchOccurrencesTool, {
+    const smallerPage = await runToolContract(searchOccurrencesTool, {
       base_name: 'Dinosauria',
-      limit: fits,
+      limit: 1,
+    });
+    expect(smallerPage.structuredContent).toMatchObject({
+      error: { data: { reason: 'canvas_capacity_exhausted' } },
+    });
+
+    // A narrowed set that fits the page stages nothing.
+    serve(fiveRexes);
+    const inline = await runToolContract(searchOccurrencesTool, {
+      base_name: 'Tyrannosaurus',
+      limit: 5,
     });
     expect(inline.isError).toBeFalsy();
-    expect(inline.structuredContent).toMatchObject({ spilled: false, row_count: fits });
+    expect(inline.structuredContent).toMatchObject({ spilled: false, row_count: 5 });
     expect(canvas.countForTenant(context)).toBe(1);
   });
 

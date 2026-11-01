@@ -43,6 +43,36 @@ describe('IntervalIndex', () => {
     expect(hits.map((iv) => iv.name)).toContain('Maastrichtian');
   });
 
+  it('includes both neighboring ages at an explicit boundary point', () => {
+    expect(index.filter({ minMa: 66, maxMa: 66, level: 'age' }).map((iv) => iv.name)).toEqual([
+      'Maastrichtian',
+      'Danian',
+    ]);
+    expect(index.filter({ minMa: 0, maxMa: 0, level: 'age' }).map((iv) => iv.name)).toEqual([
+      'Meghalayan',
+    ]);
+  });
+
+  it.each([
+    [
+      { minMa: 66, maxMa: 100.5 },
+      ['Cenomanian', 'Turonian', 'Coniacian', 'Santonian', 'Campanian', 'Maastrichtian'],
+    ],
+    [{ minMa: 70, maxMa: 71 }, ['Maastrichtian']],
+    [
+      { minMa: 66 },
+      ['Albian', 'Cenomanian', 'Turonian', 'Coniacian', 'Santonian', 'Campanian', 'Maastrichtian'],
+    ],
+    [
+      { maxMa: 100.5 },
+      ['Cenomanian', 'Turonian', 'Coniacian', 'Santonian', 'Campanian', 'Maastrichtian', 'Danian'],
+    ],
+  ])('requires positive-duration overlap for window %j', (window, expected) => {
+    const neighbors = index.all('age').filter((iv) => iv.max_ma <= 113.2 && iv.min_ma >= 61.66);
+    const subset = new IntervalIndex(neighbors);
+    expect(subset.filter({ ...window, level: 'age' }).map((iv) => iv.name)).toEqual(expected);
+  });
+
   it('returns FILTERED intervals oldest-first, not raw snapshot order', () => {
     // The snapshot is a hierarchical eon→age traversal that runs roughly
     // youngest-first; the schema, format(), and all() all promise oldest-first,

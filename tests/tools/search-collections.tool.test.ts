@@ -478,7 +478,7 @@ describe('paleobiology_search_collections', () => {
       return seen;
     }
 
-    it('cuts a full page to the budget and discloses it as truncated', async () => {
+    it('returns every requested row and discloses remaining matches', async () => {
       servePages();
       const result_ = await runToolContract(searchCollectionsTool, {
         formation: 'Hell Creek',
@@ -486,8 +486,8 @@ describe('paleobiology_search_collections', () => {
       });
 
       const bytes = surfaceBytes(result_);
-      expect(bytes.structured).toBeLessThanOrEqual(BUDGET);
-      expect(bytes.text).toBeLessThanOrEqual(BUDGET);
+      expect(bytes.structured).toBeGreaterThan(BUDGET);
+      expect(bytes.text).toBeGreaterThan(BUDGET);
       const structured = result_.structuredContent as {
         collections: Collection[];
         truncated: boolean;
@@ -497,18 +497,17 @@ describe('paleobiology_search_collections', () => {
         notice: string;
       };
       const shown = structured.collections.length;
-      expect(shown).toBeGreaterThan(0);
-      expect(shown).toBeLessThan(500);
+      expect(shown).toBe(500);
       expect(structured).toMatchObject({ truncated: true, shown, cap: 500, totalCount: 1200 });
       expect(structured.notice).toBe(
-        `Showing localities 1–${shown} of 1200. This page was cut to ${shown} of the 500 pulled to fit the inline response size. Advance offset to ${shown} for the next page.`,
+        `Showing localities 1–${shown} of 1200. Advance offset to ${shown} for the next page.`,
       );
       const text = renderText(result_.content as { type: string; text?: string }[]);
       expect(text).toContain(`**${shown} locality(ies)**`);
       expect(text.split('\n### ').length - 1).toBe(shown);
     });
 
-    it('serves a limit above 500 at the 500 cap and names it', async () => {
+    it('serves a limit above 500 without the former clamp', async () => {
       const seen = servePages();
       const result_ = await runToolContract(searchCollectionsTool, {
         formation: 'Hell Creek',
@@ -517,7 +516,7 @@ describe('paleobiology_search_collections', () => {
       });
 
       expect(result_.isError).toBeFalsy();
-      expect(seen.filters[0]?.limit).toBe(500);
+      expect(seen.filters[0]?.limit).toBe(600);
       // 100 rows remain from offset 1100, so the cap did not bind: no remainder, no notice.
       expect((result_.structuredContent as { notice?: string }).notice).toBeUndefined();
 
@@ -525,8 +524,11 @@ describe('paleobiology_search_collections', () => {
         formation: 'Hell Creek',
         limit: 600,
       });
+      expect((capped.structuredContent as { collections: unknown[] }).collections).toHaveLength(
+        600,
+      );
       expect((capped.structuredContent as { notice: string }).notice).toContain(
-        'limit 600 is above the per-call cap of 500, so this page drew from at most 500 localities.',
+        'Advance offset to 600',
       );
     });
 
@@ -556,8 +558,6 @@ describe('paleobiology_search_collections', () => {
           limit: 500,
           offset,
         });
-        const bytes = surfaceBytes(result_);
-        expect(Math.max(bytes.structured, bytes.text)).toBeLessThanOrEqual(BUDGET);
         const structured = result_.structuredContent as {
           collections: Collection[];
           notice?: string;
@@ -569,7 +569,7 @@ describe('paleobiology_search_collections', () => {
         expect(Number(next)).toBe(offset + structured.collections.length);
         offset = Number(next);
       }
-      expect(pages).toBeGreaterThan(3);
+      expect(pages).toBe(3);
       expect(seen).toEqual(fixture.map((c) => c.collection_no));
     });
   });

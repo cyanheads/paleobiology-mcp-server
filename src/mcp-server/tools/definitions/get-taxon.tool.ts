@@ -1,9 +1,9 @@
 /**
  * @fileoverview paleobiology_get_taxon — taxonomic record + fossil temporal range.
- * Resolves a name or taxon_no to the accepted name, rank, classification, parent,
+ * Resolves a name or taxon_no to matched and accepted identities, classification, parent,
  * immediate children, occurrence count, and first/last-appearance (FAD/LAD)
  * range. The name-resolution gateway the occurrence, diversity, and collection
- * searches depend on — its taxon_no is their `base_id`.
+ * searches depend on — its accepted_no is their `base_id`.
  * @module mcp-server/tools/definitions/get-taxon.tool
  */
 
@@ -28,15 +28,12 @@ export const ClassificationSchema = z
   .object({
     phylum: z.string().optional().describe('Phylum, when classified.'),
     class: z.string().optional().describe('Class, when classified.'),
-    order: z
-      .string()
-      .optional()
-      .describe('Order, when classified (PBDB sentinel orders are omitted).'),
+    order: z.string().optional().describe('Order, when classified.'),
     family: z.string().optional().describe('Family, when classified.'),
     genus: z.string().optional().describe('Genus, when classified.'),
   })
   .describe(
-    'Higher classification of the taxon. Each level is present only when PBDB resolves it.',
+    'Higher classification of the taxon. Each level is present only when PBDB resolves it; unspecified-rank sentinels are omitted at every level.',
   );
 
 const AppearanceSchema = z
@@ -52,6 +49,17 @@ const AppearanceSchema = z
 
 const ChildSchema = z
   .object({
+    accepted_no: z
+      .number()
+      .int()
+      .optional()
+      .describe('Accepted taxon id, distinct from the matched child id when redirected.'),
+    accepted_name: z.string().optional().describe('Accepted taxon name.'),
+    accepted_rank: z.string().optional().describe('Rank of the accepted taxon.'),
+    status: z
+      .string()
+      .optional()
+      .describe('PBDB taxonomic status verbatim; a nomen dubium is not a synonym.'),
     taxon_no: z
       .number()
       .int()
@@ -74,9 +82,21 @@ const TaxonOutputSchema = z.object({
     .number()
     .int()
     .describe(
-      'Accepted PBDB taxon id — the canonical id for this taxon. Pass it as base_id to paleobiology_search_occurrences, paleobiology_get_diversity, or paleobiology_search_collections to filter on this clade without re-sending a name.',
+      'Matched PBDB taxon id; the name, rank, parent, count and range describe this record. Use accepted_no for accepted-clade searches.',
     ),
   accepted_name: z.string().describe('PBDB accepted name (may differ from the searched name).'),
+  name: z.string().describe('Matched PBDB taxon name.'),
+  accepted_no: z
+    .number()
+    .int()
+    .describe(
+      'Accepted PBDB taxon id; pass as base_id to occurrence, diversity or collection searches.',
+    ),
+  accepted_rank: z.string().describe('Rank of the accepted PBDB taxon.'),
+  status: z
+    .string()
+    .optional()
+    .describe('PBDB taxonomic status verbatim, when the name is not accepted.'),
   rank: z.string().describe('Taxonomic rank, e.g. "genus", "family", "order".'),
   parent_no: z
     .number()
@@ -124,19 +144,27 @@ export type TaxonOutput = z.infer<typeof TaxonOutputSchema>;
  * The single source of taxon shaping for both paleobiology_get_taxon and the
  * paleobiology://taxon/{taxon_no} resource, so the two surfaces cannot drift.
  *
- * accepted_name and rank are required outputs — PBDB returns both for every
- * resolved taxon (rank via taxon_rank, or accepted_rank on a by-id lookup), so a
- * record missing either is unusable; fail loud rather than fabricate them.
+ * Matched name/rank and accepted id/name/rank are required outputs. A record
+ * missing either identity is unusable; fail loud rather than fabricate it.
  */
 export function shapeTaxon(taxon: Taxon): TaxonOutput {
-  if (!taxon.accepted_name || !taxon.rank) {
+  if (
+    !taxon.accepted_name ||
+    !taxon.rank ||
+    !taxon.name ||
+    taxon.accepted_no == null ||
+    !taxon.accepted_rank
+  ) {
     throw serviceUnavailable(
-      `PBDB returned taxon ${taxon.taxon_no} without an accepted name or rank.`,
+      `PBDB returned taxon ${taxon.taxon_no} without complete matched and accepted identities or ranks.`,
     );
   }
   const out: TaxonOutput = {
     taxon_no: taxon.taxon_no,
     accepted_name: taxon.accepted_name,
+    name: taxon.name,
+    accepted_no: taxon.accepted_no,
+    accepted_rank: taxon.accepted_rank,
     rank: taxon.rank,
     classification: taxon.classification,
     extant: taxon.extant,
@@ -144,6 +172,7 @@ export function shapeTaxon(taxon: Taxon): TaxonOutput {
     last_appearance: taxon.range.last_appearance,
   };
   if (taxon.parent_no != null) out.parent_no = taxon.parent_no;
+  if (taxon.status) out.status = taxon.status;
   if (taxon.parent_name) out.parent_name = taxon.parent_name;
   if (taxon.occurrence_count != null) out.occurrence_count = taxon.occurrence_count;
   if (taxon.children) {
@@ -160,7 +189,7 @@ export function shapeTaxon(taxon: Taxon): TaxonOutput {
 export const getTaxonTool = tool('paleobiology_get_taxon', {
   title: 'paleobiology-mcp-server: get taxon record and fossil range',
   description:
-    'Resolve a taxon by name (e.g. "Tyrannosaurus") or by integer taxon_no to its accepted name, rank, higher classification, immediate parent, fossil occurrence count, and first/last appearance (FAD/LAD) range in millions of years — "when did this clade exist, and what is it." Run this first to resolve a name into the accepted name and taxon_no, then pass that id as base_id to paleobiology_search_occurrences, paleobiology_get_diversity, or paleobiology_search_collections for a clade-inclusive filter that carries no name ambiguity (the same id also appears as accepted_no on occurrence rows). Set show_children to also list immediate child taxa. PBDB taxonomy is opinionated and can differ from GBIF\'s backbone, so the accepted name may differ from the name you searched.',
+    'Resolve a taxon by name (e.g. "Tyrannosaurus") or integer taxon_no. The matched name, rank, parent, occurrence count and first/last appearance range describe taxon_no; accepted_no, accepted_name and accepted_rank identify PBDB\'s accepted taxon separately, and status carries its taxonomic opinion verbatim. Pass accepted_no as base_id to paleobiology_search_occurrences, paleobiology_get_diversity or paleobiology_search_collections for accepted-clade searches. Set show_children to page immediate child taxa with their own ranks and statuses.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     name: blankAsUnset(z.string().optional()).describe(
@@ -268,7 +297,7 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
     const out = shapeTaxon(taxon);
     ctx.log.info('Taxon resolved', {
       taxon_no: taxon.taxon_no,
-      name: taxon.accepted_name,
+      name: taxon.name,
       children: out.children?.length,
       children_offset: out.children_offset,
       children_truncated: out.children_truncated,
@@ -281,12 +310,12 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
       const last = start + out.children.length;
       if (out.children_truncated) {
         ctx.enrich.notice(
-          `Showing immediate children ${start + 1}–${last} of ${oneLine(out.accepted_name)}; more remain. ` +
+          `Showing immediate children ${start + 1}–${last} of ${out.name}; more remain. ` +
             `Advance children_offset to ${last} for the next page.`,
         );
       } else if (out.children.length === 0 && start > 0) {
         ctx.enrich.notice(
-          `No immediate children at children_offset ${start} — the child list of ${oneLine(out.accepted_name)} ` +
+          `No immediate children at children_offset ${start} — the child list of ${out.name} ` +
             'ends before it. Lower children_offset (0 starts at the first child).',
         );
       }
@@ -296,7 +325,7 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
 
   format: (result) => {
     const lines: string[] = [];
-    lines.push(`## ${oneLine(result.accepted_name)}`);
+    lines.push(`## ${oneLine(result.name)}`);
     const meta = [
       `**taxon_no:** ${result.taxon_no}`,
       `**rank:** ${oneLine(result.rank)}`,
@@ -304,6 +333,10 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
     ];
     if (result.occurrence_count != null) meta.push(`**occurrences:** ${result.occurrence_count}`);
     lines.push(meta.join(' | '));
+    lines.push(
+      `**accepted:** ${oneLine(result.accepted_name)} (#${result.accepted_no}, ${oneLine(result.accepted_rank)})`,
+    );
+    if (result.status) lines.push(`**status:** ${oneLine(result.status)}`);
     if (result.parent_name || result.parent_no != null) {
       lines.push(
         `**parent:** ${oneLine(result.parent_name ?? '')}${result.parent_no != null ? ` (#${result.parent_no})` : ''}`.trim(),
@@ -323,6 +356,10 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
         if (c.rank) tail.push(oneLine(c.rank));
         if (c.occurrence_count != null) tail.push(`${c.occurrence_count} occ`);
         if (c.synonym_of) tail.push(`synonym of ${oneLine(c.synonym_of)}`);
+        if (c.accepted_name) tail.push(`accepted: ${oneLine(c.accepted_name)}`);
+        if (c.accepted_no != null) tail.push(`accepted_no: ${c.accepted_no}`);
+        if (c.accepted_rank) tail.push(`accepted_rank: ${oneLine(c.accepted_rank)}`);
+        if (c.status) tail.push(`status: ${oneLine(c.status)}`);
         lines.push(`- ${oneLine(c.name ?? `taxon #${c.taxon_no}`)} (${tail.join(', ')})`);
       }
     }

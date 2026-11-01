@@ -347,7 +347,9 @@ describe('PbdbService not-found reclassification', () => {
     expect(fetchWithTimeout.mock.calls[0]?.[3]).toMatchObject({ expectedStatuses: [404] });
 
     fetchWithTimeout.mockReset();
-    fetchWithTimeout.mockResolvedValue(okJson({ records: [{ taxon_no: '1' }] }));
+    fetchWithTimeout.mockResolvedValue(
+      okJson({ records: [{ oid: 'txn:1', rnk: 'genus', nam: 'Example' }] }),
+    );
     await service.getTaxon({ name: 'Tyrannosaurus', showChildren: false }, ctx);
     expect(fetchWithTimeout.mock.calls[0]?.[3]).toMatchObject({ expectedStatuses: [400, 404] });
 
@@ -430,9 +432,13 @@ describe('PbdbService not-found reclassification', () => {
     // min(limit, true_total), so the ONLY same-request truncation signal is
     // whether the 201st row exists. 200 real children must NOT read as truncated.
     const ctx = createMockContext();
-    const taxonRecord = { taxon_no: '10637', taxon_rank: 'genus', accepted_name: 'Turritella' };
+    const taxonRecord = { oid: 'txn:10637', rnk: 'genus', nam: 'Turritella' };
     const kids = (n: number) =>
-      Array.from({ length: n }, (_, i) => ({ taxon_no: String(500_000 + i), taxon_name: `c${i}` }));
+      Array.from({ length: n }, (_, i) => ({
+        oid: `txn:${500_000 + i}`,
+        rnk: 'species',
+        nam: `c${i}`,
+      }));
 
     for (const [returned, expectTruncated, expectChildren] of [
       [200, false, 200],
@@ -465,10 +471,12 @@ describe('PbdbService not-found reclassification', () => {
     fetchWithTimeout
       .mockResolvedValueOnce(
         okJson({
-          records: [{ taxon_no: '10637', taxon_rank: 'genus', accepted_name: 'Turritella' }],
+          records: [{ oid: 'txn:10637', rnk: 'genus', nam: 'Turritella' }],
         }),
       )
-      .mockResolvedValueOnce(okJson({ records: [{ taxon_no: '777', taxon_name: 'later child' }] }));
+      .mockResolvedValueOnce(
+        okJson({ records: [{ oid: 'txn:777', rnk: 'species', nam: 'later child' }] }),
+      );
 
     const taxon = await service.getTaxon(
       { taxonNo: 10637, showChildren: true, childrenOffset: 200 },
@@ -484,7 +492,7 @@ describe('PbdbService not-found reclassification', () => {
   it('leaves the children fields unset when no child lookup was requested (#15)', async () => {
     fetchWithTimeout.mockResolvedValue(
       okJson({
-        records: [{ taxon_no: '54833', taxon_rank: 'genus', accepted_name: 'Tyrannosaurus' }],
+        records: [{ oid: 'txn:54833', rnk: 'genus', nam: 'Tyrannosaurus' }],
       }),
     );
     const ctx = createMockContext();

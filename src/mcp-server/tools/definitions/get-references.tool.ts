@@ -8,16 +8,14 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { oneLine } from '@/mcp-server/tools/one-line.js';
 import { emitNotice } from '@/mcp-server/tools/pbdb-notices.js';
 import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
 import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
 
 /** Distinct ids resolved per call — one `refs/list` request. */
-export const REFERENCES_PER_CALL = 25;
-
-/** Most ids one call accepts — the largest page a search tool returns. */
-const MAX_REFERENCE_NOS = 500;
+export const REFERENCES_PER_CALL = 500;
 
 const NameSchema = z
   .object({
@@ -33,7 +31,7 @@ export const ReferenceSchema = z
     citation: z
       .string()
       .describe(
-        'Full citation as PBDB formats it, plain text, relayed as entered (authors, year, title, publication, volume, pages).',
+        'Full PBDB citation converted from HTML to plain text (authors, year, title, publication, volume, pages).',
       ),
     publication_type: z
       .string()
@@ -82,9 +80,8 @@ export const getReferencesTool = tool('paleobiology_get_references', {
           .describe('A reference_no from an occurrence or collection row.'),
       )
       .min(1)
-      .max(MAX_REFERENCE_NOS)
       .describe(
-        `PBDB reference ids to resolve, from the reference_no field of paleobiology_search_occurrences or paleobiology_search_collections rows. Repeats are resolved once. Up to ${MAX_REFERENCE_NOS} accepted; the first ${REFERENCES_PER_CALL} distinct ids are resolved per call.`,
+        `PBDB reference ids to resolve, from occurrence or collection rows. Repeats are resolved once. The first ${REFERENCES_PER_CALL} distinct ids are resolved per call; any remaining ids are returned for continuation.`,
       ),
   }),
   output: z.object({
@@ -141,7 +138,10 @@ export const getReferencesTool = tool('paleobiology_get_references', {
   format: (result) => {
     const lines: string[] = [];
     for (const ref of result.references) {
-      lines.push(`### reference_no ${ref.reference_no}`, `> ${oneLine(ref.citation)}`);
+      lines.push(
+        `### reference_no ${ref.reference_no}`,
+        `> ${escapeMarkdownInline(oneLine(ref.citation))}`,
+      );
       const fields: [string, string | undefined][] = [
         ['publication_type', ref.publication_type],
         ['title', ref.title],
@@ -158,7 +158,7 @@ export const getReferencesTool = tool('paleobiology_get_references', {
         ['doi', ref.doi],
       ];
       for (const [label, value] of fields) {
-        if (value) lines.push(`**${label}:** ${oneLine(value)}`);
+        if (value) lines.push(`**${label}:** ${escapeMarkdownInline(oneLine(value))}`);
       }
       lines.push('');
     }

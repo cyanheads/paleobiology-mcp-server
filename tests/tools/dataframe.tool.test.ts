@@ -1,8 +1,8 @@
 /**
  * @fileoverview Handler tests for the three DataCanvas tools — query, describe,
  * drop. Covers the canvas-enabled happy paths (mocked canvas, no DuckDB),
- * the truncated flag, query's inline response budget (the whole-row cut and the
- * LIMIT/OFFSET continuation notice), the dropped=true/false distinction, the empty-tables
+ * the truncated flag, complete query rows and the row-cap LIMIT/OFFSET
+ * continuation notice, the dropped=true/false distinction, the empty-tables
  * describe, and the canvas_disabled contract reason for describe and drop
  * (query's canvas_disabled is covered in list-intervals.tool.test.ts).
  *
@@ -14,7 +14,6 @@
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { surfaceBytes } from '../helpers/surface-bytes.js';
 
 const getCanvas = vi.fn();
 
@@ -80,9 +79,7 @@ describe('paleobiology_dataframe_query (canvas enabled)', () => {
     expect(result.row_count).toBe(5000);
   });
 
-  describe('inline response budget (#23)', () => {
-    const BUDGET = 100_000;
-
+  describe('complete query rows (#40)', () => {
     /** A canvas whose query() answers with these rows, as the DuckDB provider would. */
     function answer(rows: Record<string, unknown>[], extra: { truncated?: boolean } = {}): void {
       getCanvas.mockReturnValue(
@@ -128,7 +125,7 @@ describe('paleobiology_dataframe_query (canvas enabled)', () => {
       reference_no: '4218',
     });
 
-    it('cuts SELECT * to the budget and names the LIMIT/OFFSET that continues it', async () => {
+    it('returns every SELECT * row in order on both surfaces', async () => {
       const rows = Array.from({ length: 500 }, (_, i) => stagedRow(i + 1));
       answer(rows);
 
@@ -137,25 +134,19 @@ describe('paleobiology_dataframe_query (canvas enabled)', () => {
         sql: 'SELECT * FROM occurrences_abc1234567',
       });
 
-      const bytes = surfaceBytes(result);
-      expect(bytes.structured).toBeLessThanOrEqual(BUDGET);
-      expect(bytes.text).toBeLessThanOrEqual(BUDGET);
       const structured = result.structuredContent as {
         rows: Record<string, unknown>[];
         row_count: number;
         truncated?: boolean;
-        notice: string;
+        notice?: string;
       };
-      const shown = structured.rows.length;
-      expect(shown).toBeGreaterThan(0);
-      expect(shown).toBeLessThan(500);
-      expect(structured.rows).toEqual(rows.slice(0, shown));
+      expect(structured.rows).toEqual(rows);
       expect(structured.row_count).toBe(500);
       expect(structured.truncated).toBeUndefined();
-      expect(structured.notice).toBe(
-        `Showing the first ${shown} of the 500 rows returned — the rest would exceed the inline response size. Read on over a stable order: ORDER BY columns unique per row, set LIMIT ${shown}, and raise the query's OFFSET by ${shown} (OFFSET ${shown} if it has none) for each next page, until a page returns fewer than ${shown} rows. If the query had its own LIMIT, stop once the pages read add up to it, lowering the last page's LIMIT to the rows that remain. A query without ORDER BY has no fixed row order, so add one and restart that walk at OFFSET 0.`,
-      );
-      expect(JSON.stringify(result.content)).toContain(`set LIMIT ${shown}`);
+      expect(structured.notice).toBeUndefined();
+      expect(
+        JSON.parse(renderText(result.content as { type: string; text?: string }[])).rows,
+      ).toEqual(rows);
     });
 
     it('says the count stopped at the row cap on a truncated cross join', async () => {
@@ -170,8 +161,6 @@ describe('paleobiology_dataframe_query (canvas enabled)', () => {
         sql: 'SELECT a.occurrence_no, b.occurrence_no AS b_no FROM t a CROSS JOIN t b',
       });
 
-      const bytes = surfaceBytes(result);
-      expect(Math.max(bytes.structured, bytes.text)).toBeLessThanOrEqual(BUDGET);
       const structured = result.structuredContent as {
         rows: unknown[];
         row_count: number;
@@ -182,14 +171,18 @@ describe('paleobiology_dataframe_query (canvas enabled)', () => {
       expect(structured.notice).toContain(
         'The query produced more than 10000 rows — counting stopped at the 10000-row cap, so row_count is a floor, not the total. Wrap the query in SELECT COUNT(*) FROM (…) for the exact count.',
       );
-      expect(structured.notice).toContain(
-        `Showing the first ${structured.rows.length} of the 10000 rows returned`,
-      );
+      expect(structured.rows).toEqual(rows);
+      expect(structured.notice).toContain('set LIMIT 10000');
+      expect(structured.notice).toContain("raise the query's OFFSET by 10000");
       expect(JSON.stringify(result.content)).toContain('counting stopped at the 10000-row cap');
+      expect(renderText(result.content as { type: string; text?: string }[])).toContain(
+        'set LIMIT 10000',
+      );
     });
 
-    it('withholds a row too large for the budget on its own and says so', async () => {
-      answer([{ occurrence_no: '1', blob: 'x'.repeat(120_000) }]);
+    it('preserves a wide row on both surfaces', async () => {
+      const rows = [{ occurrence_no: '1', blob: 'x'.repeat(120_000) }];
+      answer(rows);
 
       const result = await runToolContract(dataframeQueryTool, {
         canvas_id: 'abc1234567',
@@ -197,15 +190,13 @@ describe('paleobiology_dataframe_query (canvas enabled)', () => {
       });
 
       expect(result.isError).toBeFalsy();
-      const bytes = surfaceBytes(result);
-      expect(Math.max(bytes.structured, bytes.text)).toBeLessThanOrEqual(BUDGET);
       expect(result.structuredContent).toEqual({
-        rows: [],
+        rows,
         row_count: 1,
-        notice:
-          'The first result row alone exceeds the inline response size, so it is withheld and no rows are shown. Select fewer or narrower columns so a row fits, or step past it with OFFSET over a stable ORDER BY.',
       });
-      expect(JSON.stringify(result.content)).toContain('so it is withheld and no rows are shown');
+      expect(
+        JSON.parse(renderText(result.content as { type: string; text?: string }[])).rows,
+      ).toEqual(rows);
     });
 
     it('adds no notice when the whole result fits', async () => {

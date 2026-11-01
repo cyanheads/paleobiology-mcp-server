@@ -9,24 +9,12 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { blankAsUnset } from '@/mcp-server/tools/blank-as-unset.js';
-import {
-  ENVELOPE_RESERVE_BYTES,
-  fitRows,
-  jsonItemBytes,
-  type SurfaceCost,
-  utf8Bytes,
-} from '@/mcp-server/tools/inline-budget.js';
+import { CountryFilterSchema } from '@/mcp-server/tools/country-filter.js';
 import { oneLine } from '@/mcp-server/tools/one-line.js';
-import {
-  cutPageNotice,
-  ENVIRONMENTS,
-  LIMIT_CEILING,
-  MAX_PAGE,
-  overCapNotice,
-} from '@/mcp-server/tools/paging.js';
+import { ENVIRONMENTS, LIMIT_CEILING, MAX_PAGE, overCapNotice } from '@/mcp-server/tools/paging.js';
 import { emitNotice, ignoredFilterNotice, joinNotices } from '@/mcp-server/tools/pbdb-notices.js';
 import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
-import type { Collection, CollectionFilter, EnvironmentFilter } from '@/services/pbdb/types.js';
+import type { CollectionFilter, EnvironmentFilter } from '@/services/pbdb/types.js';
 import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
 
 const CollectionSchema = z
@@ -102,7 +90,7 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
       .positive()
       .optional()
       .describe(
-        'Clade-inclusive taxon filter by PBDB taxon id — the taxon_no from paleobiology_get_taxon, or accepted_no on an occurrence row. Same semantics as base_name, but unambiguous where a name is not (homonyms, synonyms, unresolved spellings). Supply this or base_name, never both.',
+        'Clade-inclusive taxon filter by PBDB taxon id — the accepted_no from paleobiology_get_taxon or an occurrence row. Same semantics as base_name, but unambiguous where a name is not (homonyms, synonyms, unresolved spellings). Supply this or base_name, never both.',
       ),
     interval: blankAsUnset(z.string().optional()).describe(
       'Named geologic interval bounding the age, e.g. "Maastrichtian". Alternative to max_ma/min_ma.',
@@ -154,7 +142,10 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
         'Northern edge of the bounding box, decimal degrees (−90…90). Valid on its own — a lone latitude edge filters as a half-plane.',
       ),
     formation: blankAsUnset(z.string().optional()).describe(
-      'Geologic formation name to filter by, e.g. "Hell Creek".',
+      'Stored geologic formation name or PBDB list/wildcard expression, e.g. "Hell Creek"; passed unchanged, without stripping Formation, Group, or Member.',
+    ),
+    country: blankAsUnset(CountryFilterSchema.optional()).describe(
+      'PBDB country/continent codes, comma-separated; ! excludes a list and ^ subtracts a code, e.g. NOA,^US.',
     ),
     lithology: blankAsUnset(z.string().optional()).describe(
       'Lithology (rock type) to filter by, e.g. "sandstone".',
@@ -169,7 +160,7 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
       .max(LIMIT_CEILING)
       .default(100)
       .describe(
-        `Maximum localities to return per page. Up to ${MAX_PAGE} are pulled per call; a larger value is served at ${MAX_PAGE}, and the paging notice names that cap when more matches remain. A page can show fewer rows than it pulled when more would exceed the inline response size — the notice then names the offset that continues.`,
+        `Maximum localities to return per page, up to ${MAX_PAGE}, subject to PBDB_MAX_OCCURRENCES. Every fetched row is returned; the notice discloses a lower configured cap.`,
       ),
     offset: z
       .number()
@@ -202,7 +193,7 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
       .string()
       .optional()
       .describe(
-        'Guidance when no locality matched, when localities remain past this page or it was cut to fit the inline response size (naming the offset that reaches the next one), when offset ran past the end of the match set, or when a filter value was not recognized and ignored.',
+        'Applied filters and guidance when no locality matched, localities remain past this page, offset ran past the match set, or PBDB ignored a filter value.',
       ),
     attribution: z.string().describe('CC-BY data attribution for the Paleobiology Database.'),
   },
@@ -278,7 +269,7 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
     }
 
     const filter: CollectionFilter = {
-      limit: Math.min(input.limit, MAX_PAGE),
+      limit: input.limit,
       offset: input.offset,
     };
     if (input.base_name) filter.baseName = input.base_name;
@@ -291,6 +282,7 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
     if (input.latmin != null) filter.latmin = input.latmin;
     if (input.latmax != null) filter.latmax = input.latmax;
     if (input.formation) filter.formation = input.formation;
+    if (input.country) filter.country = input.country;
     if (input.lithology) filter.lithology = input.lithology;
     if (input.environment) filter.environment = input.environment as EnvironmentFilter;
 
@@ -310,12 +302,8 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
     // rest of the query applied — for `lithology` that is the FULL unfiltered set.
     // Disclose it or the agent reads an unfiltered result as a match.
     const ignored = ignoredFilterNotice(result.warnings);
-    const shown = fitRows(
-      result.collections,
-      COLLECTION_SURFACES,
-      ENVELOPE_RESERVE_BYTES + utf8Bytes(ignored ?? ''),
-    );
-    const collections = result.collections.slice(0, shown);
+    const collections = result.collections;
+    const shown = collections.length;
 
     if (result.shown === 0) {
       // An empty page past the end of a non-empty match set is a paging mistake,
@@ -328,12 +316,14 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
         pagedPastEnd
           ? `Offset ${result.offset} is past the end of the ${total} matching localities. ` +
               `Lower offset to below ${total} — the filters themselves matched.`
-          : 'No localities matched the filters. Widen the interval or bounding box, or relax the formation/' +
-              'lithology/environment filter.',
+          : `No localities matched the filters. Applied: ${Object.entries(input)
+              .filter(([key, value]) => !['limit', 'offset'].includes(key) && value !== undefined)
+              .map(([key, value]) => `${key}=${value}`)
+              .join(', ')}. Widen or relax these filters.`,
       );
     } else if (result.truncated || shown < result.shown) {
       // Page numbers come off the same offset the service derived `truncated` from;
-      // the next offset counts the rows this page delivers after the budget cut.
+      // the next offset counts every row delivered in this page.
       const first = result.offset + 1;
       const last = result.offset + shown;
       ctx.enrich.truncated({
@@ -342,9 +332,10 @@ export const searchCollectionsTool = tool('paleobiology_search_collections', {
         guidance: joinNotices(
           ignored,
           `Showing localities ${first}–${last} of ${total}.`,
-          shown < result.shown ? cutPageNotice(shown, result.shown) : undefined,
           `Advance offset to ${last} for the next page.`,
-          input.limit > MAX_PAGE ? overCapNotice(input.limit, 'localities') : undefined,
+          input.limit > result.cap
+            ? overCapNotice(input.limit, 'localities', result.cap)
+            : undefined,
         ),
       });
     } else {
@@ -403,10 +394,6 @@ function renderCollection(c: z.infer<typeof CollectionSchema>): string {
 }
 
 /** What one locality costs on each client surface: a JSON array element, and its `format()` block. */
-const COLLECTION_SURFACES: SurfaceCost<Collection>[] = [
-  jsonItemBytes,
-  (c) => utf8Bytes(renderCollection(c)) + BLOCK_SEPARATOR.length,
-];
 
 /** True when the call carries at least one real search selector (not just pagination). */
 function hasCollectionFilter(input: {
@@ -420,6 +407,7 @@ function hasCollectionFilter(input: {
   latmin?: number | undefined;
   latmax?: number | undefined;
   formation?: string | undefined;
+  country?: string | undefined;
   lithology?: string | undefined;
   environment?: string | undefined;
 }): boolean {
@@ -434,6 +422,7 @@ function hasCollectionFilter(input: {
     input.latmin != null ||
     input.latmax != null ||
     input.formation != null ||
+    input.country != null ||
     input.lithology != null ||
     input.environment != null
   );

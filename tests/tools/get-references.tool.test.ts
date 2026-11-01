@@ -145,7 +145,6 @@ describe('paleobiology_get_references', () => {
     ['zero', [0]],
     ['a negative id', [-1]],
     ['a fractional id', [1.5]],
-    ['501 ids', Array.from({ length: 501 }, (_, i) => i + 1)],
   ])('rejects %s at the schema without calling PBDB', async (_label, reference_nos) => {
     const result = await runToolContract(getReferencesTool, { reference_nos });
     expect(result.isError).toBe(true);
@@ -155,17 +154,17 @@ describe('paleobiology_get_references', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('accepts the 500-id ceiling, resolving the first 25 and returning the other 475', async () => {
+  it('resolves 500 ids in one request without a remainder', async () => {
     const ids = Array.from({ length: 500 }, (_, i) => i + 1);
     servePbdbRefs(ids.map(stubRef));
     const result = await runToolContract(getReferencesTool, { reference_nos: ids });
     const out = result.structuredContent as Out;
-    expect(out.references).toHaveLength(25);
-    expect(out.remaining_reference_nos).toEqual(ids.slice(25));
+    expect(out.references).toHaveLength(500);
+    expect(out.remaining_reference_nos).toBeUndefined();
   });
 
-  it('dedupes, then resolves the first 25 distinct ids in one request and returns the rest in remaining_reference_nos', async () => {
-    const ids = Array.from({ length: 30 }, (_, i) => 1000 + i);
+  it('dedupes, then resolves 500 distinct ids in one request and returns the rest in input order', async () => {
+    const ids = Array.from({ length: 503 }, (_, i) => 1000 + i);
     servePbdbRefs(ids.map(stubRef));
     // A repeat is resolved once, and repeats ahead of the cut must not consume cap slots.
     const result = await runToolContract(getReferencesTool, {
@@ -173,28 +172,28 @@ describe('paleobiology_get_references', () => {
     });
 
     const out = result.structuredContent as Out;
-    expect(out.references.map((r) => r.reference_no)).toEqual(ids.slice(0, 25));
-    expect(out.remaining_reference_nos).toEqual(ids.slice(25));
+    expect(out.references.map((r) => r.reference_no)).toEqual(ids.slice(0, 500));
+    expect(out.remaining_reference_nos).toEqual(ids.slice(500));
     expect(out.not_found).toEqual([]);
     expect(requestedUrls()).toHaveLength(1);
-    expect(requestedUrls()[0]?.searchParams.get('ref_id')).toBe(ids.slice(0, 25).join(','));
+    expect(requestedUrls()[0]?.searchParams.get('ref_id')).toBe(ids.slice(0, 500).join(','));
 
     const notice =
-      'Looked up the first 25 of 30 distinct reference_nos. Call paleobiology_get_references again with remaining_reference_nos for the rest.';
+      'Looked up the first 500 of 503 distinct reference_nos. Call paleobiology_get_references again with remaining_reference_nos for the rest.';
     expect(out.notice).toBe(notice);
     expect(text(result)).toContain(notice);
-    expect(text(result)).toContain(`**remaining_reference_nos:** ${ids.slice(25).join(', ')}`);
+    expect(text(result)).toContain(`**remaining_reference_nos:** ${ids.slice(500).join(', ')}`);
   });
 
   it('joins the miss and remainder notices when both apply', async () => {
-    const ids = Array.from({ length: 26 }, (_, i) => 2000 + i);
+    const ids = Array.from({ length: 501 }, (_, i) => 2000 + i);
     servePbdbRefs(ids.slice(1).map(stubRef));
     const result = await runToolContract(getReferencesTool, { reference_nos: ids });
     const out = result.structuredContent as Out;
     expect(out.not_found).toEqual([2000]);
     expect(out.notice).toBe(
       'PBDB has no reference for reference_no 2000. Take reference_no values from paleobiology_search_occurrences or paleobiology_search_collections rows. ' +
-        'Looked up the first 25 of 26 distinct reference_nos. Call paleobiology_get_references again with remaining_reference_nos for the rest.',
+        'Looked up the first 500 of 501 distinct reference_nos. Call paleobiology_get_references again with remaining_reference_nos for the rest.',
     );
   });
 
@@ -274,7 +273,7 @@ describe('paleobiology_get_references', () => {
       '**language:** English',
       '**doi:** 10.1130/0016-7606(1994)106<1377:APATLC>2.3.CO;2',
       '**not_found:** 43',
-      `**Source:** ${PBDB_ATTRIBUTION}`,
+      `**Source:** \`${PBDB_ATTRIBUTION}\``,
     ]) {
       expect(md).toContain(line);
     }

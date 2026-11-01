@@ -14,18 +14,15 @@
  * @module mcp-server/tools/pbdb-notices
  */
 
-import { oneLine } from '@/mcp-server/tools/one-line.js';
-
 /**
- * Disclose that PBDB ignored part of the query, quoting its own warning text —
- * flattened to one line, since the content[] trailer renders the notice as a
- * single `> ` quote line.
+ * Disclose that PBDB ignored part of the query, preserving its warning text.
+ * The framework quotes each notice line when rendering the content[] trailer.
  * Returns `undefined` when there is nothing to disclose, so it composes away.
  */
 export function ignoredFilterNotice(warnings: string[] | undefined): string | undefined {
   if (!warnings || warnings.length === 0) return;
   return (
-    `PBDB could not use part of this query: ${warnings.map(oneLine).join('; ')}. That filter did not constrain ` +
+    `PBDB could not use part of this query: ${warnings.join('; ')}. That filter did not constrain ` +
     'the result — correct the value or drop it before treating these records as a match on it.'
   );
 }

@@ -95,7 +95,7 @@ export interface PbdbTaxonRecord {
   accepted_no?: string;
   accepted_rank?: string;
   class?: string;
-  difference?: string; // synonymy note, e.g. "subjective synonym of"
+  difference?: string; // taxonomic status, e.g. "nomen dubium" or "subjective synonym of"
   early_interval?: string;
   extant_size?: number | string;
   family?: string;
@@ -286,6 +286,8 @@ export interface AppearanceWindow {
 /** A taxon record + its fossil temporal range. */
 export interface Taxon {
   accepted_name?: string;
+  accepted_no?: number;
+  accepted_rank?: TaxonRank;
   /** One page of immediate children — set only when a children lookup was requested. */
   children?: TaxonStub[];
   /** Offset the children page started at. Set alongside `children`. */
@@ -294,6 +296,7 @@ export interface Taxon {
   children_truncated?: boolean;
   classification: TaxonClassification;
   extant: boolean;
+  name?: string;
   occurrence_count?: number;
   parent_name?: string;
   parent_no?: number;
@@ -302,14 +305,19 @@ export interface Taxon {
     last_appearance: AppearanceWindow;
   };
   rank?: TaxonRank;
+  status?: string;
   taxon_no: number;
 }
 
 /** A compact child-taxon stub. */
 export interface TaxonStub {
+  accepted_name?: string;
+  accepted_no?: number;
+  accepted_rank?: TaxonRank;
   name?: string;
   occurrence_count?: number;
   rank?: TaxonRank;
+  status?: string;
   synonym_of?: string;
   taxon_no: number;
 }
@@ -382,7 +390,9 @@ export interface OccurrenceFilter {
   baseName?: string;
   /** Restrict to occurrences from a single collection (locality) — PBDB `coll_id`. */
   collectionNo?: number;
+  country?: string;
   environment?: EnvironmentFilter;
+  formation?: string;
   interval?: string;
   latmax?: number;
   latmin?: number;
@@ -412,6 +422,7 @@ export interface CollectionFilter {
   /** Clade-inclusive taxon id — PBDB `base_id=txn:<n>`. Mutually exclusive with `baseName`. */
   baseId?: number;
   baseName?: string;
+  country?: string;
   environment?: EnvironmentFilter;
   formation?: string;
   interval?: string;
@@ -435,9 +446,18 @@ export interface DiversityFilter {
   baseId?: number;
   baseName?: string;
   count: DiversityCount;
+  country?: string;
+  environment?: EnvironmentFilter;
+  formation?: string;
   interval?: string;
+  latmax?: number;
+  latmin?: number;
+  lngmax?: number;
+  lngmin?: number;
   maxMa?: number;
   minMa?: number;
+  /** Extend known extant taxa to the present; false omits PBDB's presence parameter. */
+  recent?: boolean;
   resolution: DiversityResolution;
 }
 
@@ -482,7 +502,7 @@ export interface PbdbReferenceName {
 
 /**
  * Raw `/refs/list` record (vocab=pbdb, show=both,authorlist). PBDB omits an
- * absent field rather than sending it empty; `formatted` is its plain-text
+ * absent field rather than sending it empty; `formatted` is its HTML-formatted
  * citation. `author`/`editors` are PBDB's own split of the author fields — one
  * entry can be `{}` where the source data has an empty name.
  */
@@ -511,7 +531,7 @@ export interface ReferenceName {
 }
 
 /**
- * A bibliographic reference. `citation` is PBDB's formatted citation, verbatim;
+ * A bibliographic reference. Citation, title and publication are HTML-decoded text;
  * years and pages stay strings (`"viii"`, `"e0207935:1"`). Absent fields stay absent.
  */
 export interface Reference {

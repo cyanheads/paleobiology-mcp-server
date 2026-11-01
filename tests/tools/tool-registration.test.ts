@@ -88,8 +88,13 @@ const QUERY_AND_DESCRIBE = ['paleobiology_dataframe_query', 'paleobiology_datafr
 
 describe('dataframe tool registration', { timeout: 20_000 }, () => {
   it.each([
-    ['canvas off', {}, DOMAIN_TOOLS],
-    ['canvas off, drop flag on', { PALEOBIOLOGY_DATAFRAME_DROP_ENABLED: 'true' }, DOMAIN_TOOLS],
+    ['canvas defaults on', {}, [...DOMAIN_TOOLS, ...QUERY_AND_DESCRIBE]],
+    ['canvas off', { CANVAS_PROVIDER_TYPE: 'none' }, DOMAIN_TOOLS],
+    [
+      'canvas off, drop flag on',
+      { CANVAS_PROVIDER_TYPE: 'none', PALEOBIOLOGY_DATAFRAME_DROP_ENABLED: 'true' },
+      DOMAIN_TOOLS,
+    ],
     ['canvas on', { CANVAS_PROVIDER_TYPE: 'duckdb' }, [...DOMAIN_TOOLS, ...QUERY_AND_DESCRIBE]],
     [
       'canvas on, drop flag on',

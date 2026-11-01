@@ -17,6 +17,7 @@
 import { JsonRpcErrorCode, McpError, notFound } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { normalizeOccurrence } from '@/services/pbdb/pbdb-service.js';
 import type { Occurrence, Taxon } from '@/services/pbdb/types.js';
 import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
 import { expectMcpError } from '../helpers/expect-error.js';
@@ -77,6 +78,26 @@ describe('paleobiology://occurrence/{occurrence_no}', () => {
     expect(result.attribution).toMatch(/CC BY 4\.0/);
   });
 
+  it('preserves genuine ranks and omits unspecified markers on the resource (#41)', async () => {
+    getOccurrence.mockResolvedValue(
+      normalizeOccurrence({
+        occurrence_no: '130294',
+        phylum: 'Chordata',
+        family: 'NO_FAMILY_SPECIFIED',
+        genus: 'Protarchaeopteryx',
+      }),
+    );
+    const result = await occurrenceResource.handler(
+      occurrenceParams.parse({ occurrence_no: '130294' }),
+      createMockContext({ errors: occurrenceResource.errors }),
+    );
+    expect(result).toMatchObject({
+      classification: { phylum: 'Chordata', genus: 'Protarchaeopteryx' },
+      attribution: PBDB_ATTRIBUTION,
+    });
+    expect(JSON.stringify(result)).not.toContain('NO_FAMILY_SPECIFIED');
+  });
+
   it('rejects a non-integer occurrence_no at the param boundary', () => {
     expect(() => occurrenceParams.parse({ occurrence_no: 'abc' })).toThrow();
     expect(() => occurrenceParams.parse({ occurrence_no: '12.5' })).toThrow();
@@ -113,6 +134,9 @@ describe('paleobiology://taxon/{taxon_no}', () => {
   function rangedTaxon(): Taxon {
     return {
       taxon_no: 54833,
+      name: 'Tyrannosaurus',
+      accepted_no: 54833,
+      accepted_rank: 'genus',
       accepted_name: 'Tyrannosaurus',
       rank: 'genus',
       parent_no: 92294,

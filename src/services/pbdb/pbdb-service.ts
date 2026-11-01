@@ -1,9 +1,10 @@
 /**
  * @fileoverview Paleobiology Database (PBDB) HTTP client + normalizer.
  *
- * One method per resource family. Every request carries `vocab=pbdb` (so PBDB
- * emits readable field names) plus the per-tool `show` blocks each tool needs;
- * raw compact codes never reach the agent. Retry wraps the full fetch+parse
+ * One method per resource family. Taxon requests use compact vocabulary to
+ * preserve each matched record's rank; an adapter restores readable fields.
+ * Other requests use `vocab=pbdb` plus each tool's required `show` blocks.
+ * Retry wraps the full fetch+parse
  * pipeline (degraded-upstream backoff). The normalizer coerces PBDB's mixed
  * string/number fields, computes the few derived fields (FAD/LAD windows,
  * origination/extinction sums from the diversity boundary-crosser counts), and
@@ -57,6 +58,7 @@
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
+import { z } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import {
   JsonRpcErrorCode,
@@ -65,6 +67,7 @@ import {
   serviceUnavailable,
 } from '@cyanheads/mcp-ts-core/errors';
 import { fetchWithTimeout, requestContextService, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import { Tokenizer } from 'htmlparser2';
 import { getServerConfig } from '../../config/server-config.js';
 import type {
   Collection,
@@ -112,6 +115,9 @@ const SHOW_BLOCKS = {
  */
 export const TAXON_CHILDREN_PAGE_SIZE = 200;
 
+/** Maximum occurrences fetched for one staged set, independent of the inline page cap. */
+export const MAX_STAGED_OCCURRENCES = 50_000;
+
 /** Map the agent-facing environment enum to PBDB `envtype` values. */
 function envtypeFor(env: EnvironmentFilter): string {
   switch (env) {
@@ -158,12 +164,10 @@ function classificationOf(r: {
   genus?: string;
 }): TaxonClassification {
   const c: TaxonClassification = {};
-  if (r.phylum) c.phylum = r.phylum;
-  if (r.class) c.class = r.class;
-  // PBDB uses the literal "NO_ORDER_SPECIFIED" as a sentinel — treat as absent.
-  if (r.order && r.order !== 'NO_ORDER_SPECIFIED') c.order = r.order;
-  if (r.family) c.family = r.family;
-  if (r.genus) c.genus = r.genus;
+  for (const rank of ['phylum', 'class', 'order', 'family', 'genus'] as const) {
+    const value = r[rank];
+    if (value && value !== `NO_${rank.toUpperCase()}_SPECIFIED`) c[rank] = value;
+  }
   return c;
 }
 
@@ -286,12 +290,26 @@ export class PbdbService {
    * Search fossil occurrences. Returns the normalized page of rows plus the
    * envelope `meta` (true match count, PBDB's warnings).
    */
-  async searchOccurrences(filter: OccurrenceFilter, ctx: Context): Promise<OccurrenceSearch> {
+  searchOccurrences(filter: OccurrenceFilter, ctx: Context): Promise<OccurrenceSearch> {
     const cap = Math.min(filter.limit, getServerConfig().pbdbMaxOccurrences);
+    return this.fetchOccurrences(filter, cap, filter.offset, ctx);
+  }
+
+  /** Fetch a staging set from its beginning, bounded independently of inline pagination. */
+  searchOccurrenceSet(filter: OccurrenceFilter, ctx: Context): Promise<OccurrenceSearch> {
+    return this.fetchOccurrences(filter, MAX_STAGED_OCCURRENCES, 0, ctx);
+  }
+
+  private async fetchOccurrences(
+    filter: OccurrenceFilter,
+    limit: number,
+    offset: number,
+    ctx: Context,
+  ): Promise<OccurrenceSearch> {
     const params: Record<string, string | number | undefined> = {
       show: SHOW_BLOCKS.occurrences,
-      limit: cap,
-      offset: filter.offset,
+      limit,
+      offset,
       // Ask PBDB for the true match count so the caller can state the exact
       // remainder instead of inferring truncation from a full page. It is
       // independent of `offset`, so the same total anchors every page.
@@ -300,6 +318,8 @@ export class PbdbService {
       base_id: baseIdParam(filter.baseId),
       taxon_name: filter.taxonName,
       coll_id: filter.collectionNo,
+      cc: filter.country,
+      formation: filter.formation,
       interval: filter.interval,
       max_ma: filter.maxMa,
       min_ma: filter.minMa,
@@ -347,9 +367,9 @@ export class PbdbService {
    */
   async getTaxon(args: TaxonLookup, ctx: Context): Promise<Taxon> {
     const idParam = args.taxonNo != null ? `txn:${args.taxonNo}` : undefined;
-    const { records } = await this.get<PbdbTaxonRecord>(
+    const { records } = await this.get<unknown>(
       'taxa/single',
-      { name: args.name, id: idParam, show: SHOW_BLOCKS.taxa },
+      { name: args.name, id: idParam, show: SHOW_BLOCKS.taxa, vocab: 'com' },
       ctx,
       'getTaxon',
       // `taxa/single` answers an unknown id or unmatched name with 404 and a name
@@ -365,7 +385,7 @@ export class PbdbService {
         { reason: 'taxon_not_found' },
       );
     }
-    const taxon = normalizeTaxon(rec);
+    const taxon = normalizeTaxon(readCompactTaxon(rec));
 
     if (args.showChildren) {
       const offset = args.childrenOffset ?? 0;
@@ -375,18 +395,20 @@ export class PbdbService {
       // only exact total comes from a second `limit=0` preflight. Asking for one
       // extra row instead keeps this to a single request; the sentinel row is
       // dropped before the page is handed back.
-      const { records: childRecords } = await this.get<PbdbTaxonRecord>(
+      const { records: rawChildren } = await this.get<unknown>(
         'taxa/list',
         {
           id: `txn:${taxon.taxon_no}`,
           rel: 'children',
           show: 'app',
+          vocab: 'com',
           limit: TAXON_CHILDREN_PAGE_SIZE + 1,
           offset,
         },
         ctx,
         'getTaxonChildren',
       );
+      const childRecords = rawChildren.map(readCompactTaxon);
       taxon.children = childRecords
         .filter((c) => intId(c.taxon_no) !== taxon.taxon_no)
         .slice(0, TAXON_CHILDREN_PAGE_SIZE)
@@ -417,6 +439,14 @@ export class PbdbService {
         base_id: baseIdParam(filter.baseId),
         count: filter.count,
         time_reso: timeResoFor(filter.resolution),
+        recent: filter.recent ? 'yes' : undefined,
+        cc: filter.country,
+        formation: filter.formation,
+        envtype: filter.environment ? envtypeFor(filter.environment) : undefined,
+        lngmin: filter.lngmin,
+        lngmax: filter.lngmax,
+        latmin: filter.latmin,
+        latmax: filter.latmax,
         interval: filter.interval,
         max_ma: filter.maxMa,
         min_ma: filter.minMa,
@@ -435,6 +465,7 @@ export class PbdbService {
     const cap = Math.min(filter.limit, getServerConfig().pbdbMaxOccurrences);
     const params: Record<string, string | number | undefined> = {
       show: SHOW_BLOCKS.collections,
+      cc: filter.country,
       limit: cap,
       offset: filter.offset,
       // Ask PBDB for the true match count so truncation is known, not inferred
@@ -595,6 +626,114 @@ export function normalizeOccurrence(r: PbdbOccurrenceRecord): Occurrence {
   return o;
 }
 
+/** Compact taxon vocabulary preserves own rank on both by-id and child lookups. */
+const CompactTaxonSchema = z.object({
+  oid: z.string().regex(/^txn:\d+$/),
+  rnk: z.union([z.number(), z.string()]),
+  nam: z.string(),
+  acc: z
+    .string()
+    .regex(/^txn:\d+$/)
+    .optional(),
+  acr: z.union([z.number(), z.string()]).optional(),
+  acn: z.string().optional(),
+  tdf: z.string().optional(),
+  ext: z.string().optional(),
+  noc: z.union([z.number(), z.string()]).optional(),
+  par: z
+    .string()
+    .regex(/^txn:\d+$/)
+    .optional(),
+  prl: z.string().optional(),
+  phl: z.string().optional(),
+  cll: z.string().optional(),
+  odl: z.string().optional(),
+  fml: z.string().optional(),
+  gnl: z.string().optional(),
+  fea: z.number().optional(),
+  fla: z.number().optional(),
+  lea: z.number().optional(),
+  lla: z.number().optional(),
+  tei: z.string().optional(),
+  tli: z.string().optional(),
+});
+
+/** PBDB's published rank codes: data1.2/general/taxon_ranks_doc.html. */
+const COMPACT_RANKS = new Map<number, string>([
+  [2, 'subspecies'],
+  [3, 'species'],
+  [4, 'subgenus'],
+  [5, 'genus'],
+  [6, 'subtribe'],
+  [7, 'tribe'],
+  [8, 'subfamily'],
+  [9, 'family'],
+  [10, 'superfamily'],
+  [11, 'infraorder'],
+  [12, 'suborder'],
+  [13, 'order'],
+  [14, 'superorder'],
+  [15, 'infraclass'],
+  [16, 'subclass'],
+  [17, 'class'],
+  [18, 'superclass'],
+  [19, 'subphylum'],
+  [20, 'phylum'],
+  [21, 'superphylum'],
+  [22, 'subkingdom'],
+  [23, 'kingdom'],
+  [25, 'unranked clade'],
+  [26, 'informal'],
+]);
+
+/** Compact responses use numeric rank codes or open-ended readable rank names. */
+function compactRank(rank: number | string): string | undefined {
+  const code = Number(rank);
+  return typeof rank === 'string' && Number.isNaN(code) ? rank : COMPACT_RANKS.get(code);
+}
+
+/** Translate compact fields once at the API boundary; omitted accepted fields mean own identity. */
+function readCompactTaxon(raw: unknown): PbdbTaxonRecord {
+  const parsed = CompactTaxonSchema.safeParse(raw);
+  if (!parsed.success)
+    throw serviceUnavailable('PBDB returned a taxon without a valid identity or rank.', undefined, {
+      cause: parsed.error,
+    });
+  const r = parsed.data;
+  if (r.acc != null && r.acc !== r.oid && (r.acn == null || r.acr == null)) {
+    throw serviceUnavailable('PBDB returned a redirected taxon without its accepted identity.');
+  }
+  const ownRank = compactRank(r.rnk);
+  if (!ownRank) throw serviceUnavailable('PBDB returned an unrecognized matched taxon rank.');
+  const acceptedRank = r.acr == null ? ownRank : compactRank(r.acr);
+  if (!acceptedRank) throw serviceUnavailable('PBDB returned an unrecognized accepted taxon rank.');
+  const record: PbdbTaxonRecord = {
+    taxon_no: r.oid.slice(4),
+    taxon_name: r.nam,
+    taxon_rank: ownRank,
+    accepted_no: (r.acc ?? r.oid).slice(4),
+    accepted_name: r.acn ?? r.nam,
+    accepted_rank: acceptedRank,
+    is_extant: r.ext === '1' ? 'extant' : 'extinct',
+  };
+  if (r.tdf != null) record.difference = r.tdf;
+  if (r.noc != null) record.n_occs = r.noc;
+  if (r.par != null) record.parent_no = r.par.slice(4);
+  if (r.prl != null) record.parent_name = r.prl;
+  if (r.phl != null) record.phylum = r.phl;
+  if (r.cll != null) record.class = r.cll;
+  if (r.odl != null) record.order = r.odl;
+  if (r.fml != null) record.family = r.fml;
+  if (r.gnl != null) record.genus = r.gnl;
+  if (r.fea != null) record.firstapp_max_ma = r.fea;
+  if (r.fla != null) record.firstapp_min_ma = r.fla;
+  if (r.lea != null) record.lastapp_max_ma = r.lea;
+  if (r.lla != null) record.lastapp_min_ma = r.lla;
+  if (r.tei != null) record.early_interval = r.tei;
+  if (r.tli != null) record.late_interval = r.tli;
+  return record;
+}
+
 /** Normalize a raw taxon record into a full Taxon (range + classification). */
 export function normalizeTaxon(r: PbdbTaxonRecord): Taxon {
   const t: Taxon = {
@@ -607,10 +746,14 @@ export function normalizeTaxon(r: PbdbTaxonRecord): Taxon {
     },
   };
   if (r.accepted_name) t.accepted_name = r.accepted_name;
-  // PBDB populates `taxon_rank` on a by-name lookup but leaves it null on a
-  // by-id lookup, where the rank lives in `accepted_rank` — fall back to it so
-  // get_taxon by taxon_no and the taxon resource surface the rank either way.
-  const rank = r.taxon_rank || r.accepted_rank;
+  const acceptedNo = intId(r.accepted_no);
+  if (acceptedNo != null) t.accepted_no = acceptedNo;
+  if (r.taxon_name) t.name = r.taxon_name;
+  if (r.accepted_rank) t.accepted_rank = r.accepted_rank;
+  if (r.difference) t.status = r.difference;
+  // An accepted rank describes the matched record only when the identities agree.
+  const rank =
+    r.taxon_rank || (acceptedNo == null || acceptedNo === t.taxon_no ? r.accepted_rank : undefined);
   if (rank) t.rank = rank;
   const parentNo = intId(r.parent_no);
   if (parentNo != null) t.parent_no = parentNo;
@@ -639,11 +782,20 @@ function appearanceWindow(
 export function normalizeTaxonStub(r: PbdbTaxonRecord): TaxonStub {
   const s: TaxonStub = { taxon_no: intId(r.taxon_no) ?? 0 };
   if (r.taxon_name) s.name = r.taxon_name;
-  if (r.accepted_rank) s.rank = r.accepted_rank;
+  if (r.taxon_rank) s.rank = r.taxon_rank;
+  if (r.accepted_name) s.accepted_name = r.accepted_name;
+  const acceptedNo = intId(r.accepted_no);
+  if (acceptedNo != null) s.accepted_no = acceptedNo;
+  if (r.accepted_rank) s.accepted_rank = r.accepted_rank;
+  if (r.difference) s.status = r.difference;
   const occCount = num(r.n_occs);
   if (occCount != null) s.occurrence_count = occCount;
   // PBDB flags synonyms via `difference` + an accepted_name that differs from the row name.
-  if (r.difference && r.accepted_name && r.accepted_name !== r.taxon_name) {
+  if (
+    (r.difference === 'subjective synonym of' || r.difference === 'objective synonym of') &&
+    r.accepted_name &&
+    r.accepted_name !== r.taxon_name
+  ) {
     s.synonym_of = r.accepted_name;
   }
   return s;
@@ -753,8 +905,8 @@ export function normalizeCollection(r: PbdbCollectionRecord): Collection {
 }
 
 /**
- * Normalize a raw `refs/list` record to a {@link Reference}. Text is relayed
- * verbatim (PBDB's citation is plain text; CR/LF and `&` included) and years and
+ * Normalize a raw `refs/list` record to a {@link Reference}. Citation, title and
+ * publication HTML become text once; CR/LF remain intact, and years and
  * pages stay strings. A record without its id or formatted citation is unusable —
  * the citation is the point of the lookup — so it fails loud.
  */
@@ -763,15 +915,15 @@ export function normalizeReference(r: PbdbReferenceRecord): Reference {
   if (referenceNo == null || !r.formatted) {
     throw serviceUnavailable('PBDB returned a reference without its id or formatted citation.');
   }
-  const ref: Reference = { reference_no: referenceNo, citation: r.formatted };
+  const ref: Reference = { reference_no: referenceNo, citation: referenceText(r.formatted) };
   if (r.publication_type) ref.publication_type = r.publication_type;
-  if (r.reftitle) ref.title = r.reftitle;
+  if (r.reftitle) ref.title = referenceText(r.reftitle);
   if (r.pubyr) ref.year = r.pubyr;
   const authors = referenceNames(r.author);
   if (authors) ref.authors = authors;
   const editors = referenceNames(r.editors);
   if (editors) ref.editors = editors;
-  if (r.pubtitle) ref.publication = r.pubtitle;
+  if (r.pubtitle) ref.publication = referenceText(r.pubtitle);
   if (r.pubvol) ref.volume = r.pubvol;
   if (r.pubno) ref.issue = r.pubno;
   if (r.firstpage) ref.first_page = r.firstpage;
@@ -780,6 +932,39 @@ export function normalizeReference(r: PbdbReferenceRecord): Reference {
   if (r.language) ref.language = r.language;
   if (r.doi) ref.doi = r.doi;
   return ref;
+}
+
+/** Decode HTML text events once, retaining literal text and original line breaks. */
+function referenceText(html: string): string {
+  const chunks: string[] = [];
+  // Only lexical text is needed; tree construction would add nesting-dependent work.
+  const tokenizer = new Tokenizer(
+    { decodeEntities: true },
+    {
+      ontext: (start, end) => {
+        chunks.push(html.slice(start, end));
+      },
+      ontextentity: (codepoint) => {
+        chunks.push(String.fromCodePoint(codepoint));
+      },
+      onattribdata() {},
+      onattribentity() {},
+      onattribend() {},
+      onattribname() {},
+      oncdata() {},
+      onclosetag() {},
+      oncomment() {},
+      ondeclaration() {},
+      onend() {},
+      onopentagend() {},
+      onopentagname() {},
+      onprocessinginstruction() {},
+      onselfclosingtag() {},
+    },
+  );
+  tokenizer.write(html);
+  tokenizer.end();
+  return chunks.join('');
 }
 
 /** Map PBDB's authorlist entries to names, dropping nameless ones; `undefined` when none remain. */

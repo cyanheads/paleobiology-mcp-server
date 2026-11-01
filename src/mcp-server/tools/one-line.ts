@@ -2,7 +2,7 @@
  * @fileoverview Shared flattener for upstream text rendered into a single
  * `content[]` line.
  *
- * Every `format()` renderer (and the notice text the enrichment trailer quotes)
+ * Every `format()` renderer
  * interpolates PBDB-supplied strings into one-line Markdown slots — a `### name`
  * heading, a `**label:** value` line, a list item, a table cell, a `> ` quote. A
  * line break inside the value ends that line early, so its remainder renders as
