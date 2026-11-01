@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-11-01 · ⚠️ Breaking
+
+Fossil record identity and bounded occurrence analysis
+
 ## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-10-15
 
 Adds paleobiology_get_references and a paleobiology://reference/{reference_no} resource to resolve reference_no values to citations; bounds search and dataframe responses by serialized size; treats blank optional inputs as unset; lists the dataframe tools only when DataCanvas is on.
