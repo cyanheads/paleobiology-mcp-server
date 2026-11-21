@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-11-21 · ⚠️ Breaking
+
+Filter fossil searches by recorded locality and see how PBDB bins occurrences for diversity.
+
 ## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-11-01 · ⚠️ Breaking
 
 Fossil record identity and bounded occurrence analysis
