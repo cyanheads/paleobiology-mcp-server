@@ -13,9 +13,10 @@ import { CountryFilterSchema } from '@/mcp-server/tools/country-filter.js';
 import { oneLine } from '@/mcp-server/tools/one-line.js';
 import { ENVIRONMENTS } from '@/mcp-server/tools/paging.js';
 import { emitNotice, ignoredFilterNotice } from '@/mcp-server/tools/pbdb-notices.js';
+import { DiversitySummarySchema } from '@/services/pbdb/diversity-summary.js';
 import { getPbdbService } from '@/services/pbdb/pbdb-service.js';
 import type { DiversityFilter } from '@/services/pbdb/types.js';
-import { PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
+import { DIVERSITY_TIME_RULES, PBDB_ATTRIBUTION } from '@/services/pbdb/types.js';
 
 const COUNTS = ['genera', 'species', 'families'] as const;
 const RESOLUTIONS = ['period', 'epoch', 'age'] as const;
@@ -69,6 +70,9 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     resolution: blankAsUnset(z.enum(RESOLUTIONS).default('period')).describe(
       'Bin resolution: "period" (default, coarse), "epoch", or "age" (finest).',
     ),
+    timerule: blankAsUnset(z.enum(DIVERSITY_TIME_RULES).optional()).describe(
+      'How PBDB selects occurrences and assigns bins: "major" (default) requires more than half the occurrence age range, "contain" requires full containment, and "overlap" includes any overlap and can count one occurrence in multiple bins.',
+    ),
     recent: z
       .boolean()
       .default(false)
@@ -77,6 +81,12 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
       ),
     country: blankAsUnset(CountryFilterSchema.optional()).describe(
       'PBDB country or continent codes, e.g. "US", "NOA,^US", or "!EUR,^IS".',
+    ),
+    state: blankAsUnset(z.string().optional()).describe(
+      'Recorded state or province name, e.g. "Texas". Pair with country to distinguish repeated names.',
+    ),
+    county: blankAsUnset(z.string().optional()).describe(
+      'Recorded county name, e.g. "Brewster". Pair with state and country to distinguish repeated names.',
     ),
     formation: blankAsUnset(z.string().optional()).describe(
       'Stored formation name, e.g. "Hell Creek"; comma lists and SQL wildcards are passed unchanged. Do not append Formation unless it is part of the stored name.',
@@ -136,6 +146,7 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
       .describe(
         'Per-interval diversity bins over the span, ordered oldest-first (oldest geologic interval, highest max_ma, first).',
       ),
+    summary: DiversitySummarySchema.optional(),
   }),
   enrichment: {
     totalCount: z.number().describe('Number of geologic-interval bins returned.'),
@@ -143,7 +154,7 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
       .string()
       .optional()
       .describe(
-        'Sampled-turnover interpretation, effective extant-range policy, selection-boundary guidance, empty-result selectors and ignored-filter warnings.',
+        'Effective time rule, sampled-turnover interpretation, extant-range policy, selection-boundary guidance, empty-result selectors and ignored-filter warnings.',
       ),
     attribution: z.string().describe('CC-BY data attribution for the Paleobiology Database.'),
   },
@@ -221,7 +232,10 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
       resolution: input.resolution,
     };
     if (input.recent) filter.recent = true;
+    if (input.timerule) filter.timerule = input.timerule;
     if (input.country) filter.country = input.country;
+    if (input.state) filter.state = input.state;
+    if (input.county) filter.county = input.county;
     if (input.formation) filter.formation = input.formation;
     if (input.environment) filter.environment = input.environment;
     if (input.lngmin != null) filter.lngmin = input.lngmin;
@@ -234,7 +248,7 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     if (input.max_ma != null) filter.maxMa = input.max_ma;
     if (input.min_ma != null) filter.minMa = input.min_ma;
 
-    const { bins, warnings } = await getPbdbService().getDiversity(filter, ctx);
+    const { bins, summary, warnings } = await getPbdbService().getDiversity(filter, ctx);
     // PBDB returns bins newest-first; present them oldest-first (highest max_ma
     // first) so the curve reads as a timeline and matches the output schema.
     bins.sort((a, b) => b.max_ma - a.max_ma);
@@ -263,17 +277,26 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
     emitNotice(
       ctx,
       ignoredFilterNotice(warnings),
+      `PBDB time rule: timerule=${input.timerule ?? 'major'}.`,
       `Originations and extinctions are first/last appearances within the selected occurrence set, not established biological events. ${edges} recent=${input.recent}: ${input.recent ? 'known extant taxa range through to the present; other boundary effects remain' : 'ranges end at the latest selected fossil, including known extant taxa'}.`,
       bins.length === 0
         ? `No diversity bins for "${clade}" over the requested span. Verify the taxon with paleobiology_get_taxon and confirm the interval/Ma range overlaps its fossil range. Applied selectors: ${selectors}.`
         : undefined,
     );
-    return { bins };
+    return summary === undefined ? { bins } : { bins, summary };
   },
 
   format: (result) => {
+    const coverage = result.summary
+      ? Object.entries(result.summary).map(([key, value]) => `- **${key}:** ${value}`)
+      : [];
     if (result.bins.length === 0) {
-      return [{ type: 'text', text: 'No diversity bins matched the clade and span.' }];
+      return [
+        {
+          type: 'text',
+          text: ['No diversity bins matched the clade and span.', ...coverage].join('\n'),
+        },
+      ];
     }
     const header =
       '| interval | age (Ma) | sampled | implied | originations | extinctions | range-through | occurrences |';
@@ -291,6 +314,7 @@ export const getDiversityTool = tool('paleobiology_get_diversity', {
           header,
           sep,
           ...rows,
+          ...(coverage.length > 0 ? ['', '**PBDB occurrence coverage**', ...coverage] : []),
         ].join('\n'),
       },
     ];

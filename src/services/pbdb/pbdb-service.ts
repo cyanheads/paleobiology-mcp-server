@@ -69,6 +69,7 @@ import {
 import { fetchWithTimeout, requestContextService, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { Tokenizer } from 'htmlparser2';
 import { getServerConfig } from '../../config/server-config.js';
+import { DiversitySummarySchema } from './diversity-summary.js';
 import type {
   Collection,
   CollectionFilter,
@@ -105,7 +106,7 @@ import type {
 const SHOW_BLOCKS = {
   occurrences: 'coords,loc,strat,class,paleoloc',
   taxa: 'class,app,size,parent',
-  collections: 'loc,strat,lith,env,time',
+  collections: 'loc,strat,lith,env,time,paleoloc',
 } as const;
 
 /**
@@ -222,16 +223,11 @@ export class PbdbService {
             expectedStatuses,
           });
         } catch (err) {
-          // fetchWithTimeout throws a status-mapped McpError on every non-2xx, plus
-          // a Timeout/ServiceUnavailable/InternalError on timeout / network / abort.
-          // Each of those carries the raw upstream plumbing in `data` (statusCode,
-          // statusText, responseBody, requestId, operation) and the fetched URL in
-          // its message — all of which the framework forwards verbatim to the client
-          // on a public server. Sanitize EVERY upstream McpError into a clean typed
-          // domain error (PBDB's 400/404 not-found → NotFound the tool can remap;
-          // everything else → same code, leak-free `data`, original kept as `cause`),
-          // so nothing internal escapes. Transient codes are preserved, so withRetry
-          // still backs off on 5xx / rate-limit / timeout.
+          /**
+           * The framework keeps the upstream body on the thrown error for local
+           * classification. Map PBDB's parameter and lookup failures to domain
+           * reasons and preserve transient codes for the surrounding retry.
+           */
           throw sanitizeUpstreamError(err, operation);
         }
         const text = await response.text();
@@ -281,7 +277,9 @@ export class PbdbService {
     if (body.warnings && body.warnings.length > 0) meta.warnings = body.warnings;
     if (typeof body.records_found === 'number') meta.recordsFound = body.records_found;
     if (typeof body.records_returned === 'number') meta.recordsReturned = body.records_returned;
-    return { records: body.records ?? [], meta };
+    const result: PbdbResponse<T> = { records: body.records ?? [], meta };
+    if (body.summary !== undefined) result.summary = body.summary;
+    return result;
   }
 
   // ── Occurrences ─────────────────────────────────────────────────────────────
@@ -319,6 +317,8 @@ export class PbdbService {
       taxon_name: filter.taxonName,
       coll_id: filter.collectionNo,
       cc: filter.country,
+      state: filter.state,
+      county: filter.county,
       formation: filter.formation,
       interval: filter.interval,
       max_ma: filter.maxMa,
@@ -426,21 +426,22 @@ export class PbdbService {
   /**
    * Compute a diversity / origination / extinction curve, binned by interval.
    *
-   * No `rowcount` here — a diversity response's row count is its bin count, which
-   * is already the whole curve; the metadata that matters is `warnings`, which is
-   * how an unmatched `base_name` reads differently from a clade with no data in
-   * the span (both return zero bins).
+   * Use `datainfo` for occurrence coverage. `rowcount` would only count bins.
    */
   async getDiversity(filter: DiversityFilter, ctx: Context): Promise<DiversityResult> {
-    const { records, meta } = await this.get<PbdbDiversityRecord>(
+    const { records, meta, summary } = await this.get<PbdbDiversityRecord>(
       'occs/diversity',
       {
         base_name: filter.baseName,
         base_id: baseIdParam(filter.baseId),
         count: filter.count,
         time_reso: timeResoFor(filter.resolution),
+        timerule: filter.timerule,
+        datainfo: 'yes',
         recent: filter.recent ? 'yes' : undefined,
         cc: filter.country,
+        state: filter.state,
+        county: filter.county,
         formation: filter.formation,
         envtype: filter.environment ? envtypeFor(filter.environment) : undefined,
         lngmin: filter.lngmin,
@@ -454,8 +455,18 @@ export class PbdbService {
       ctx,
       'getDiversity',
     );
-    const bins = records.map(normalizeDiversityBin);
-    return meta.warnings ? { bins, warnings: meta.warnings } : { bins };
+    const result: DiversityResult = { bins: records.map(normalizeDiversityBin) };
+    if (meta.warnings) result.warnings = meta.warnings;
+    if (summary !== undefined) {
+      const parsed = DiversitySummarySchema.safeParse(summary);
+      if (!parsed.success) {
+        throw serviceUnavailable('PBDB returned invalid diversity coverage counts.', undefined, {
+          cause: parsed.error,
+        });
+      }
+      result.summary = parsed.data;
+    }
+    return result;
   }
 
   // ── Collections ──────────────────────────────────────────────────────────────
@@ -465,7 +476,10 @@ export class PbdbService {
     const cap = Math.min(filter.limit, getServerConfig().pbdbMaxOccurrences);
     const params: Record<string, string | number | undefined> = {
       show: SHOW_BLOCKS.collections,
+      coll_id: filter.collectionNos?.join(','),
       cc: filter.country,
+      state: filter.state,
+      county: filter.county,
       limit: cap,
       offset: filter.offset,
       // Ask PBDB for the true match count so truncation is known, not inferred
@@ -513,7 +527,7 @@ export class PbdbService {
   /**
    * Resolve one interval by exact name across every PBDB time scale — the
    * sub-stage and regional names (`Late Maastrichtian`, `Lancian`) that occurrence
-   * and collection rows report but the bundled ICS snapshot does not carry.
+   * and collection rows report outside the bundled PBDB international scale.
    *
    * `undefined` means PBDB has no interval by that name. Unlike the single-record
    * endpoints, `intervals/list` answers an unknown name with HTTP 200 + an empty
@@ -714,8 +728,8 @@ function readCompactTaxon(raw: unknown): PbdbTaxonRecord {
     accepted_no: (r.acc ?? r.oid).slice(4),
     accepted_name: r.acn ?? r.nam,
     accepted_rank: acceptedRank,
-    is_extant: r.ext === '1' ? 'extant' : 'extinct',
   };
+  if (r.ext === '0' || r.ext === '1') record.is_extant = r.ext === '1' ? 'extant' : 'extinct';
   if (r.tdf != null) record.difference = r.tdf;
   if (r.noc != null) record.n_occs = r.noc;
   if (r.par != null) record.parent_no = r.par.slice(4);
@@ -739,12 +753,12 @@ export function normalizeTaxon(r: PbdbTaxonRecord): Taxon {
   const t: Taxon = {
     taxon_no: intId(r.taxon_no) ?? 0,
     classification: classificationOf(r),
-    extant: r.is_extant === 'extant',
     range: {
       first_appearance: appearanceWindow(r.firstapp_max_ma, r.firstapp_min_ma, r.early_interval),
       last_appearance: appearanceWindow(r.lastapp_max_ma, r.lastapp_min_ma, r.late_interval),
     },
   };
+  if (r.is_extant === 'extant' || r.is_extant === 'extinct') t.extant = r.is_extant === 'extant';
   if (r.accepted_name) t.accepted_name = r.accepted_name;
   const acceptedNo = intId(r.accepted_no);
   if (acceptedNo != null) t.accepted_no = acceptedNo;
@@ -878,6 +892,11 @@ export function normalizeCollection(r: PbdbCollectionRecord): Collection {
   if (lng != null) c.lng = lng;
   const lat = num(r.lat);
   if (lat != null) c.lat = lat;
+  const paleolng = num(r.paleolng);
+  if (paleolng != null) c.paleolng = paleolng;
+  const paleolat = num(r.paleolat);
+  if (paleolat != null) c.paleolat = paleolat;
+  if (r.paleomodel) c.paleomodel = r.paleomodel;
   if (r.early_interval) c.early_interval = r.early_interval;
   if (r.late_interval) c.late_interval = r.late_interval;
   const maxMa = num(r.max_ma);

@@ -17,7 +17,6 @@ import {
   type DataCanvas,
 } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { getServerConfig } from '@/config/server-config.js';
 import { blankAsUnset } from '@/mcp-server/tools/blank-as-unset.js';
 import { CountryFilterSchema } from '@/mcp-server/tools/country-filter.js';
 import {
@@ -25,7 +24,7 @@ import {
   fmtClassification,
 } from '@/mcp-server/tools/definitions/get-taxon.tool.js';
 import { oneLine } from '@/mcp-server/tools/one-line.js';
-import { ENVIRONMENTS, LIMIT_CEILING, MAX_PAGE, overCapNotice } from '@/mcp-server/tools/paging.js';
+import { ENVIRONMENTS, resolveSearchLimit, searchLimitSchema } from '@/mcp-server/tools/paging.js';
 import { emitNotice, ignoredFilterNotice } from '@/mcp-server/tools/pbdb-notices.js';
 import { getCanvas } from '@/services/canvas-accessor.js';
 import { getPbdbService, MAX_STAGED_OCCURRENCES } from '@/services/pbdb/pbdb-service.js';
@@ -79,7 +78,9 @@ const OccurrenceSchema = z
       .number()
       .int()
       .optional()
-      .describe('Locality this came from — chain into paleobiology_search_collections.'),
+      .describe(
+        'PBDB locality ID. Pass it in the collection_no array on paleobiology_search_collections for locality context.',
+      ),
     identified_name: z.string().optional().describe('The original field/published identification.'),
     identified_rank: z.string().optional().describe('Rank of the identified name.'),
     accepted_name: z
@@ -194,7 +195,7 @@ type OccurrenceRow = z.infer<typeof OccurrenceSchema>;
 export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
   title: 'paleobiology-mcp-server: search fossil occurrences',
   description:
-    'Search fossil occurrences by clade-inclusive base_name or base_id, exact taxon_name, interval or max_ma/min_ma, modern geographic bounds, country, formation, environment, or collection_no. At least one filter is required. Formation matches PBDB stored names and preserves list/wildcard syntax; suffixes are not removed. Resolve uncertain taxon names with paleobiology_get_taxon. Rows carry modern lng/lat, reconstructed paleolng/paleolat, age, strata, classification, and source reference_no; keep the coordinate systems distinct. Every served page row is returned, with total matches and the offset that continues the page. When this deployment has DataCanvas enabled, a first page with additional matches stages up to 50,000 occurrences on a canvas: use paleobiology_dataframe_describe for columns, then paleobiology_dataframe_query for SQL over the staged set; the notice distinguishes complete from partial coverage. Later offsets and complete pages stage nothing and leave any supplied canvas untouched.',
+    'Search fossil occurrences by clade-inclusive base_name or base_id, exact taxon_name, interval or max_ma/min_ma, modern geographic bounds, country, state, county, formation, environment, or collection_no. At least one filter is required. Formation matches PBDB stored names and preserves list/wildcard syntax; suffixes are not removed. Resolve uncertain taxon names with paleobiology_get_taxon. Rows carry modern lng/lat, reconstructed paleolng/paleolat, age, strata, classification, and source reference_no; keep the coordinate systems distinct. Every served page row is returned, with total matches and the offset that continues the page. When this deployment has DataCanvas enabled, a first page with additional matches stages up to 50,000 occurrences on a canvas: use paleobiology_dataframe_describe for columns, then paleobiology_dataframe_query for SQL over the staged set; the notice distinguishes complete from partial coverage. Later offsets and complete pages stage nothing and leave any supplied canvas untouched.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     base_name: blankAsUnset(z.string().optional()).describe(
@@ -277,15 +278,13 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     country: blankAsUnset(CountryFilterSchema.optional()).describe(
       'PBDB country/continent codes, comma-separated; ! excludes a list and ^ subtracts a code, e.g. NOA,^US.',
     ),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(LIMIT_CEILING)
-      .default(100)
-      .describe(
-        `Maximum occurrences to return per page, up to ${MAX_PAGE}, subject to PBDB_MAX_OCCURRENCES. Every fetched page row is returned; the notice discloses a lower configured cap. Pair with offset to walk the match set.`,
-      ),
+    state: blankAsUnset(z.string().optional()).describe(
+      'State or province name as recorded by PBDB, e.g. "Texas". Pair with country to disambiguate; coverage may be incomplete.',
+    ),
+    county: blankAsUnset(z.string().optional()).describe(
+      'County or other sub-state division name as recorded by PBDB, e.g. "Brewster". Pair with state and country to disambiguate; coverage may be incomplete.',
+    ),
+    limit: searchLimitSchema('occurrences'),
     offset: z
       .number()
       .int()
@@ -322,7 +321,7 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       code: JsonRpcErrorCode.InvalidParams,
       when: 'The call carried only pagination fields — no taxon, time, place, environment, or collection filter.',
       recovery:
-        'Provide at least one filter: base_name, base_id, or taxon_name, an interval or max_ma/min_ma range, a lng/lat bounding box, an environment, or a collection_no — then retry.',
+        'Provide at least one filter: base_name, base_id, taxon_name, interval or max_ma/min_ma, a lng/lat bounding box, country, state, county, formation, environment, or collection_no.',
     },
     {
       reason: 'conflicting_taxon_filter',
@@ -392,8 +391,9 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       );
     }
 
+    const pageLimit = resolveSearchLimit('paleobiology_search_occurrences', input.limit, ctx);
     const filter: OccurrenceFilter = {
-      limit: input.limit,
+      limit: pageLimit.limit,
       offset: input.offset,
     };
     if (input.base_name) filter.baseName = input.base_name;
@@ -409,13 +409,9 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     if (input.latmax != null) filter.latmax = input.latmax;
     if (input.environment) filter.environment = input.environment;
     if (input.country) filter.country = input.country;
+    if (input.state) filter.state = input.state;
+    if (input.county) filter.county = input.county;
     if (input.formation) filter.formation = input.formation;
-
-    // The service pulls at most `cap` rows (the smaller of the served page size and
-    // the server-wide row cap). PBDB reports the true match count (`records_found`)
-    // on the same envelope, so the notices below state the exact remainder instead
-    // of guessing from a full page.
-    const cap = Math.min(filter.limit, getServerConfig().pbdbMaxOccurrences);
 
     ctx.enrich({ attribution: PBDB_ATTRIBUTION });
 
@@ -429,18 +425,17 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
     const ignored = ignoredFilterNotice(meta.warnings);
 
     if (rows.length === 0) {
-      emitNotice(ctx, ignored, emptyPageNotice(input, total));
+      emitNotice(ctx, ignored, emptyPageNotice(input, total), pageLimit.notice);
       return { occurrences: [], spilled: false, row_count: 0 };
     }
 
     const shown = rows.length;
     const canvas = getCanvas();
-    const pageArgs = { offset: input.offset, total, limit: input.limit, cap };
+    const continuation = nextPageNotice({ offset: input.offset, shown, total, ...pageLimit });
 
     if (!canvas || input.offset !== 0 || rows.length >= total) {
       // Later offsets, complete pages, and canvas-free deployments leave a supplied canvas untouched.
-      const page = nextPageNotice({ ...pageArgs, shown });
-      emitNotice(ctx, ignored, page);
+      emitNotice(ctx, ignored, continuation, pageLimit.notice);
       ctx.log.info('Occurrence search', {
         shown,
         pulled: rows.length,
@@ -485,7 +480,8 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
       emitNotice(
         ctx,
         ignored,
-        nextPageNotice({ ...pageArgs, shown }),
+        continuation,
+        pageLimit.notice,
         'The matching set could not be acquired for SQL because PBDB is temporarily unavailable; this response still contains the requested page. Retry this first page to stage the set.',
       );
       return { occurrences: rows, spilled: false, row_count: rows.length };
@@ -512,7 +508,8 @@ export const searchOccurrencesTool = tool('paleobiology_search_occurrences', {
         : stagedCount < stagedTotal
           ? `This table contains ${stagedCount} of ${stagedTotal} matching occurrences, bounded at ${MAX_STAGED_OCCURRENCES}; it is a partial set. Narrow the filters for complete-set SQL.`
           : `The table contains all ${stagedCount} matching occurrences.`,
-      nextPageNotice({ ...pageArgs, shown }),
+      continuation,
+      pageLimit.notice,
     );
     ctx.log.info('Occurrence search', {
       preview: shown,
@@ -553,7 +550,7 @@ function renderOccurrence(o: OccurrenceRow): string {
   ];
   const idLine = [`**occurrence_no:** ${o.occurrence_no}`];
   if (o.collection_no != null) idLine.push(`**collection_no:** ${o.collection_no}`);
-  if (o.accepted_no != null) idLine.push(`**taxon_no:** ${o.accepted_no}`);
+  if (o.accepted_no != null) idLine.push(`**accepted_no:** ${o.accepted_no}`);
   lines.push(idLine.join(' | '));
   if (o.identified_name && o.identified_name !== o.accepted_name) {
     lines.push(
@@ -641,6 +638,8 @@ type OccurrenceFilterInput = {
   environment?: string | undefined;
   formation?: string | undefined;
   country?: string | undefined;
+  state?: string | undefined;
+  county?: string | undefined;
 };
 
 /** True when the call carries at least one real search selector (not just pagination). */
@@ -659,6 +658,8 @@ function hasOccurrenceFilter(input: OccurrenceFilterInput): boolean {
     input.latmax != null ||
     input.environment != null ||
     input.country != null ||
+    input.state != null ||
+    input.county != null ||
     input.formation != null
   );
 }
@@ -666,26 +667,23 @@ function hasOccurrenceFilter(input: OccurrenceFilterInput): boolean {
 /**
  * Page-position guidance, or `undefined` when this page reached the end of the
  * match set. `shown` counts only the delivered inline rows; the next offset is
- * `offset + shown`, independent of staging. Advancing `offset` is the primary next step —
- * "raise limit" only appears when the requested limit bound the page below the
- * input ceiling; a lower configured page cap is disclosed instead.
+ * `offset + shown`, independent of staging. The limit can rise to the effective
+ * page maximum if the caller requested a smaller page.
  */
 function nextPageNotice(page: {
   offset: number;
   shown: number;
   total: number;
   limit: number;
-  cap: number;
+  maximum: number;
 }): string | undefined {
-  const { offset, shown, total, limit, cap } = page;
+  const { offset, shown, total, limit, maximum } = page;
   const last = offset + shown;
   if (shown === 0 || last >= total) return;
   const parts = [`Showing occurrences ${offset + 1}–${last} of ${total}.`];
   parts.push(`Advance offset to ${last} for the next page.`);
-  if (limit > cap) {
-    parts.push(overCapNotice(limit, 'occurrences', cap));
-  } else if (cap === limit && limit < MAX_PAGE) {
-    parts.push(`Or raise limit (max ${MAX_PAGE}) to pull more per page.`);
+  if (limit < maximum) {
+    parts.push(`Or raise limit (max ${maximum}) to pull more per page.`);
   }
   return parts.join(' ');
 }
@@ -713,7 +711,7 @@ function emptyNotice(input: OccurrenceFilterInput): string {
     )
     .map(([key, value]) => `${key}=${value}`)
     .join(', ');
-  return `No occurrences matched ${selectors}. Verify the taxon with paleobiology_get_taxon, a collection_no with paleobiology_search_collections, or widen these filters.`;
+  return `No occurrences matched ${selectors}. Verify the taxon with paleobiology_get_taxon, check locality IDs with the collection_no array on paleobiology_search_collections, or widen these filters.`;
 }
 
 /** Render an occurrence's age, echoing interval(s) and Ma. */

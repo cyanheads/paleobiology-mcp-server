@@ -1,9 +1,8 @@
 /**
- * @fileoverview Bundled ICS International Chronostratigraphic time-scale snapshot.
+ * @fileoverview Bundled PBDB international time-scale snapshot.
  *
- * Generated once from PBDB `/intervals/list?scale_id=1` (the ICS international
- * scale) and checked in so {@link IntervalIndex} resolves named intervals ↔ Ma
- * with no network call. Regenerate on ICS revision; bump `ICS_VERSION`.
+ * Captured from PBDB `/intervals/list?scale_id=1` so named intervals resolve
+ * offline to the boundaries PBDB uses for temporal filters and diversity bins.
  *
  * Boundaries: `max_ma` is the older (bottom, PBDB `b_age`) boundary, `min_ma` the
  * younger (top, PBDB `t_age`). `level` is PBDB's interval `type`.
@@ -14,14 +13,11 @@
 
 import type { Interval } from '../pbdb/types.js';
 
-/** ICS chart version this snapshot reflects. Surfaced as `snapshot_version`. */
-export const ICS_VERSION = '2023/09';
+/** Date this PBDB scale was captured (ISO 8601). */
+export const SNAPSHOT_GENERATED = '2026-11-21';
 
-/** Date this snapshot was generated (ISO 8601). */
-export const SNAPSHOT_GENERATED = '2026-06-23';
-
-/** The bundled geologic intervals (ICS international scale). */
-export const ICS_INTERVALS: readonly Interval[] = [
+/** The bundled geologic intervals (PBDB international scale, scale_id=1). */
+export const INTERNATIONAL_INTERVALS: readonly Interval[] = [
   {
     interval_no: 751,
     name: 'Phanerozoic',
@@ -687,7 +683,7 @@ export const ICS_INTERVALS: readonly Interval[] = [
     interval_no: 45,
     name: 'Middle Triassic',
     level: 'epoch',
-    max_ma: 246.7,
+    max_ma: 247,
     min_ma: 237,
     parent_no: 16,
     color: '#B168B1',
@@ -705,7 +701,7 @@ export const ICS_INTERVALS: readonly Interval[] = [
     interval_no: 139,
     name: 'Anisian',
     level: 'age',
-    max_ma: 246.7,
+    max_ma: 247,
     min_ma: 241.464,
     parent_no: 45,
     color: '#BC75B7',
@@ -715,7 +711,7 @@ export const ICS_INTERVALS: readonly Interval[] = [
     name: 'Early Triassic',
     level: 'epoch',
     max_ma: 251.902,
-    min_ma: 246.7,
+    min_ma: 247,
     parent_no: 16,
     color: '#983999',
   },
@@ -723,8 +719,8 @@ export const ICS_INTERVALS: readonly Interval[] = [
     interval_no: 652,
     name: 'Olenekian',
     level: 'age',
-    max_ma: 249.9,
-    min_ma: 246.7,
+    max_ma: 250.8,
+    min_ma: 247,
     parent_no: 46,
     color: '#B051A5',
   },
@@ -733,7 +729,7 @@ export const ICS_INTERVALS: readonly Interval[] = [
     name: 'Induan',
     level: 'age',
     max_ma: 251.902,
-    min_ma: 249.9,
+    min_ma: 250.8,
     parent_no: 46,
     color: '#A4469F',
   },
@@ -761,7 +757,7 @@ export const ICS_INTERVALS: readonly Interval[] = [
     interval_no: 771,
     name: 'Lopingian',
     level: 'epoch',
-    max_ma: 259.51,
+    max_ma: 259.857,
     min_ma: 251.902,
     parent_no: 17,
     color: '#FBA794',
@@ -779,7 +775,7 @@ export const ICS_INTERVALS: readonly Interval[] = [
     interval_no: 716,
     name: 'Wuchiapingian',
     level: 'age',
-    max_ma: 259.51,
+    max_ma: 259.857,
     min_ma: 254.14,
     parent_no: 771,
     color: '#FCB4A2',
@@ -789,7 +785,7 @@ export const ICS_INTERVALS: readonly Interval[] = [
     name: 'Guadalupian',
     level: 'epoch',
     max_ma: 274.4,
-    min_ma: 259.51,
+    min_ma: 259.857,
     parent_no: 17,
     color: '#FB745C',
   },
@@ -798,7 +794,7 @@ export const ICS_INTERVALS: readonly Interval[] = [
     name: 'Capitanian',
     level: 'age',
     max_ma: 264.28,
-    min_ma: 259.51,
+    min_ma: 259.857,
     parent_no: 772,
     color: '#FB9A85',
   },

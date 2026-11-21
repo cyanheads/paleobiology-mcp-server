@@ -107,7 +107,10 @@ const TaxonOutputSchema = z.object({
   classification: ClassificationSchema,
   extant: z
     .boolean()
-    .describe('True if the clade survives to the present day; false if entirely extinct.'),
+    .optional()
+    .describe(
+      'PBDB reports that the clade survives to the present when true and is extinct when false. Omitted when PBDB provides no status.',
+    ),
   occurrence_count: z
     .number()
     .optional()
@@ -167,10 +170,10 @@ export function shapeTaxon(taxon: Taxon): TaxonOutput {
     accepted_rank: taxon.accepted_rank,
     rank: taxon.rank,
     classification: taxon.classification,
-    extant: taxon.extant,
     first_appearance: taxon.range.first_appearance,
     last_appearance: taxon.range.last_appearance,
   };
+  if (taxon.extant != null) out.extant = taxon.extant;
   if (taxon.parent_no != null) out.parent_no = taxon.parent_no;
   if (taxon.status) out.status = taxon.status;
   if (taxon.parent_name) out.parent_name = taxon.parent_name;
@@ -329,7 +332,7 @@ export const getTaxonTool = tool('paleobiology_get_taxon', {
     const meta = [
       `**taxon_no:** ${result.taxon_no}`,
       `**rank:** ${oneLine(result.rank)}`,
-      `**extant:** ${result.extant ? 'yes' : 'no (extinct)'}`,
+      `**extant:** ${result.extant == null ? 'unknown' : result.extant ? 'yes' : 'no (extinct)'}`,
     ];
     if (result.occurrence_count != null) meta.push(`**occurrences:** ${result.occurrence_count}`);
     lines.push(meta.join(' | '));

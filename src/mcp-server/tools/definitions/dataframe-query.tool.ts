@@ -1,6 +1,6 @@
 /**
  * @fileoverview paleobiology_dataframe_query — read-only SQL over staged occurrences.
- * Runs a SELECT against the occurrence result sets paleobiology_search_occurrences
+ * Runs read-only SQL against the occurrence result sets paleobiology_search_occurrences
  * stages on a DataCanvas: count by interval, group by formation/country, roll up
  * by family from the classification JSON column, map by region. Mandatory
  * companion to the spill path. Returns every row supplied by the canvas; a
@@ -36,7 +36,7 @@ const DataframeQueryOutputSchema = z.object({
 export const dataframeQueryTool = tool('paleobiology_dataframe_query', {
   title: 'paleobiology-mcp-server: query staged occurrences with SQL',
   description:
-    "Run a read-only SQL SELECT against occurrence result sets staged on a DataCanvas by paleobiology_search_occurrences. This is how you analyze a large fossil set without re-fetching it: count occurrences by early_interval, group by formation, country (cc), or accepted_name, or filter by a paleo/modern coordinate range. The classification column is JSON — roll up by rank with json_extract_string(classification, '$.family') (also $.phylum, $.class, $.order, $.genus). Staged rows are occurrences, so collection-only fields such as lithology are not present. Reference tables by the table_name that paleobiology_search_occurrences returned — call paleobiology_dataframe_describe first if you do not know the table or column names. Every row supplied by the canvas is returned; choose smaller pages with SQL LIMIT/OFFSET. Results exceeding the canvas row cap include a notice naming the stable ORDER BY … LIMIT/OFFSET continuation. SELECT only; writes and file-reading functions are rejected.",
+    "Run read-only SQL against occurrence result sets staged on a DataCanvas by paleobiology_search_occurrences. Count occurrences by early_interval, group by formation, country (cc), or accepted_name, or filter by a paleo/modern coordinate range. The classification column is JSON — roll up by rank with json_extract_string(classification, '$.family') (also $.phylum, $.class, $.order, $.genus). Staged rows are occurrences, so collection-only fields such as lithology are not present. Reference the table_name returned by paleobiology_search_occurrences. Inspect its columns with SHOW or DESCRIBE, or use paleobiology_dataframe_describe to list all staged tables. Use range() or generate_series() with constant arguments to fill gaps in grouped results. Every row supplied by the canvas is returned; choose smaller pages with SQL LIMIT/OFFSET. A capped result includes the stable ORDER BY … LIMIT/OFFSET continuation. Writes and file-reading functions are rejected.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     canvas_id: CanvasIdSchema.describe(
@@ -45,7 +45,7 @@ export const dataframeQueryTool = tool('paleobiology_dataframe_query', {
     sql: z
       .string()
       .describe(
-        'A read-only SQL SELECT. Reference tables by the names paleobiology_search_occurrences / paleobiology_dataframe_describe returned.',
+        'A read-only SQL statement, such as SELECT, SHOW, or DESCRIBE. Reference tables by the names paleobiology_search_occurrences or paleobiology_dataframe_describe returned.',
       ),
   }),
   output: DataframeQueryOutputSchema,

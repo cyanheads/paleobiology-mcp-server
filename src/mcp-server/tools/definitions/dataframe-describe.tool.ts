@@ -8,6 +8,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { CanvasIdSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { markdown } from '@cyanheads/mcp-ts-core/utils';
 import { getCanvas } from '@/services/canvas-accessor.js';
 
 export const dataframeDescribeTool = tool('paleobiology_dataframe_describe', {
@@ -36,6 +37,10 @@ export const dataframeDescribeTool = tool('paleobiology_dataframe_describe', {
                   .object({
                     name: z.string().describe('Column name.'),
                     type: z.string().describe('SQL column type, e.g. VARCHAR, DOUBLE, BIGINT.'),
+                    engine_type: z
+                      .string()
+                      .optional()
+                      .describe('Exact DuckDB column type, e.g. DECIMAL(10,2) or BIGINT[].'),
                     nullable: z
                       .boolean()
                       .optional()
@@ -65,7 +70,7 @@ export const dataframeDescribeTool = tool('paleobiology_dataframe_describe', {
       throw ctx.fail('canvas_disabled', 'DataCanvas is not enabled on this deployment.');
     }
     const instance = await canvas.acquire(input.canvas_id, ctx);
-    const tables = await instance.describe();
+    const tables = await instance.describe({ signal: ctx.signal });
     ctx.log.info('Canvas describe', { canvas_id: input.canvas_id, tables: tables.length });
 
     return {
@@ -73,14 +78,12 @@ export const dataframeDescribeTool = tool('paleobiology_dataframe_describe', {
         name: t.name,
         kind: t.kind,
         row_count: t.rowCount,
-        columns: t.columns.map((c) => {
-          const col: { name: string; type: string; nullable?: boolean } = {
-            name: c.name,
-            type: c.type,
-          };
-          if (c.nullable != null) col.nullable = c.nullable;
-          return col;
-        }),
+        columns: t.columns.map((c) => ({
+          name: c.name,
+          type: c.type,
+          ...(c.engineType !== undefined && { engine_type: c.engineType }),
+          ...(c.nullable !== undefined && { nullable: c.nullable }),
+        })),
       })),
     };
   },
@@ -93,7 +96,11 @@ export const dataframeDescribeTool = tool('paleobiology_dataframe_describe', {
     for (const t of result.tables) {
       lines.push(`### ${t.name} (${t.kind}, ${t.row_count} rows)`);
       for (const c of t.columns) {
-        lines.push(`- \`${c.name}\` ${c.type}${c.nullable ? ' (nullable)' : ''}`);
+        const line = markdown().text('- ').inlineCode(c.name).text(` ${c.type}`);
+        if (c.engine_type !== undefined)
+          line.text(' (DuckDB type ').inlineCode(c.engine_type).text(')');
+        if (c.nullable !== undefined) line.text(c.nullable ? ' (nullable)' : ' (not nullable)');
+        lines.push(line.build());
       }
       lines.push('');
     }

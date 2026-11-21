@@ -27,7 +27,13 @@ const ServerConfigSchema = z.object({
     .positive()
     .default(1000)
     .describe(
-      'Hard cap on occurrence or collection page rows. The tools accept at most 10,000 rows per page. Separate occurrence-set staging is bounded at 50,000 rows independently of this page cap.',
+      'Deployment cap on inline occurrence or collection page rows, up to 10,000. Separate occurrence-set staging is bounded at 50,000 rows independently of this page cap.',
+    ),
+  pbdbClampLimits: z
+    .stringbool()
+    .default(true)
+    .describe(
+      'Serve requests above 10,000 rows at the effective cap. Disable to reject those requests at input validation.',
     ),
   dataframeDropEnabled: z
     .stringbool()
@@ -43,6 +49,7 @@ const ENV_MAP = {
   pbdbBaseUrl: 'PBDB_BASE_URL',
   pbdbTimeoutMs: 'PBDB_TIMEOUT_MS',
   pbdbMaxOccurrences: 'PBDB_MAX_OCCURRENCES',
+  pbdbClampLimits: 'PBDB_CLAMP_LIMITS',
   dataframeDropEnabled: 'PALEOBIOLOGY_DATAFRAME_DROP_ENABLED',
 } as const;
 
@@ -69,4 +76,12 @@ export function isDataframeDropEnabled(): boolean {
     normalizeEnv({ dataframeDropEnabled: process.env[ENV_MAP.dataframeDropEnabled] }),
   );
   return parsed.success && parsed.data.dataframeDropEnabled;
+}
+
+/** Read the limit mode while building tool schemas. Invalid values fail in setup. */
+export function arePbdbClampLimitsEnabled(): boolean {
+  const parsed = ServerConfigSchema.pick({ pbdbClampLimits: true }).safeParse(
+    normalizeEnv({ pbdbClampLimits: process.env[ENV_MAP.pbdbClampLimits] }),
+  );
+  return parsed.success && parsed.data.pbdbClampLimits;
 }

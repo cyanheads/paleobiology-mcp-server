@@ -1,8 +1,8 @@
 /**
- * @fileoverview In-memory index over the bundled ICS geologic time scale.
+ * @fileoverview In-memory index over the bundled PBDB international time scale.
  *
  * Backs the offline half of `paleobiology_list_intervals`: browsing the scale and
- * every name the ICS international scale carries resolves here with no network
+ * every name the international scale carries resolves here with no network
  * call. Names outside it — PBDB's sub-stage and regional scales — are resolved
  * upstream by the tool handler, which owns that fallback so this stays a plain
  * synchronous index. The set is small and bounded (~171 intervals) — not a
@@ -11,7 +11,7 @@
  */
 
 import type { Interval, IntervalLevel } from '../pbdb/types.js';
-import { ICS_INTERVALS, ICS_VERSION, SNAPSHOT_GENERATED } from './time-scale-data.js';
+import { INTERNATIONAL_INTERVALS, SNAPSHOT_GENERATED } from './time-scale-data.js';
 
 /** Normalize an interval name for case-insensitive lookup. */
 const norm = (s: string): string => s.trim().toLowerCase();
@@ -66,9 +66,9 @@ export class IntervalIndex {
     }
   }
 
-  /** The snapshot version string surfaced to consumers (`ICS_VERSION (generated …)`). */
+  /** Identify the PBDB scale and capture date for citation. */
   get snapshotVersion(): string {
-    return `ICS ${ICS_VERSION} (snapshot generated ${SNAPSHOT_GENERATED})`;
+    return `PBDB international scale (scale_id=1, snapshot captured ${SNAPSHOT_GENERATED})`;
   }
 
   /** Exact (case-insensitive) interval lookup by name. */
@@ -97,7 +97,7 @@ let _index: IntervalIndex | undefined;
 
 /** Build the singleton index from the bundled snapshot. Call in setup(). */
 export function initIntervalIndex(): void {
-  _index = new IntervalIndex(ICS_INTERVALS);
+  _index = new IntervalIndex(INTERNATIONAL_INTERVALS);
 }
 
 /** Resolve the index; throws if not initialized. */

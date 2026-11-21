@@ -26,6 +26,7 @@ import type { Occurrence, PbdbSearchMeta } from '@/services/pbdb/types.js';
 
 let canvas: DataCanvas;
 const context = createMockContext();
+const SCHEMA_SNIFF_ROWS = 100;
 
 /** A real DuckDB canvas, optionally capped at `maxCanvasesPerTenant`. */
 function makeCanvas(maxCanvasesPerTenant?: number): DataCanvas {
@@ -33,7 +34,7 @@ function makeCanvas(maxCanvasesPerTenant?: number): DataCanvas {
     defaultRowLimit: 1000,
     exportRootPath: '.cache/canvas-test-exports',
     memoryLimitMb: 64,
-    schemaSniffRows: 100,
+    schemaSniffRows: SCHEMA_SNIFF_ROWS,
   });
   const registry =
     maxCanvasesPerTenant === undefined
@@ -69,11 +70,11 @@ function serve(rows: Occurrence[], meta: PbdbSearchMeta = { recordsFound: rows.l
     }));
 }
 
-/** Request a 100-row page of 500 matches; returns the staged handle and canvas id. */
-async function stageSpill() {
-  serve(wideRows(500));
+/** Request a partial page of matches; returns the staged handle and canvas id. */
+async function stageSpill(count = 500, limit = 100) {
+  serve(wideRows(count));
   const handle = searchOccurrencesTool.output.parse(
-    (await runToolContract(searchOccurrencesTool, { base_name: 'Dinosauria', limit: 100 }))
+    (await runToolContract(searchOccurrencesTool, { base_name: 'Dinosauria', limit }))
       .structuredContent,
   );
   return { handle, canvasId: CanvasIdSchema.parse(handle.canvas_id) };
@@ -114,28 +115,28 @@ afterEach(async () => {
 });
 
 it('preserves fractional ages and coordinates after an integral preview', async () => {
-  const rows: Occurrence[] = Array.from({ length: 500 }, (_, i) => ({
+  const fractionalId = SCHEMA_SNIFF_ROWS + 1;
+  const rows: Occurrence[] = Array.from({ length: SCHEMA_SNIFF_ROWS }, (_, i) => ({
     occurrence_no: i + 1,
-    formation: 'X'.repeat(1000),
     max_ma: 70,
     min_ma: 66,
     lng: -110,
     lat: 45,
   }));
-  rows[499] = { ...rows[499], occurrence_no: 500, min_ma: 66.25, lng: -110.75, lat: 45.125 };
+  rows.push({ occurrence_no: fractionalId, max_ma: 70, min_ma: 66.25, lng: -110.75, lat: 45.125 });
   serve(rows);
 
   const staged = await runToolContract(searchOccurrencesTool, {
     base_name: 'Dinosauria',
-    limit: 100,
+    limit: SCHEMA_SNIFF_ROWS,
   });
   expect(staged.isError).not.toBe(true);
   const handle = searchOccurrencesTool.output.parse(staged.structuredContent);
   expect(handle.spilled).toBe(true);
-  expect(handle.row_count).toBe(500);
+  expect(handle.row_count).toBe(fractionalId);
   const queried = await runToolContract(dataframeQueryTool, {
     canvas_id: CanvasIdSchema.parse(handle.canvas_id),
-    sql: `SELECT min_ma, lng, lat FROM ${handle.table_name} WHERE occurrence_no = 500`,
+    sql: `SELECT min_ma, lng, lat FROM ${handle.table_name} WHERE occurrence_no = ${fractionalId}`,
   });
   expect(queried.isError).not.toBe(true);
   expect(queried.structuredContent).toMatchObject({
@@ -171,8 +172,8 @@ it('retains sparse columns and nested classification first populated after the p
     tables: [
       {
         columns: expect.arrayContaining([
-          { name: 'max_ma', type: 'DOUBLE', nullable: true },
-          { name: 'classification', type: 'JSON', nullable: true },
+          { name: 'max_ma', type: 'DOUBLE', engine_type: 'DOUBLE', nullable: true },
+          { name: 'classification', type: 'JSON', engine_type: 'JSON', nullable: true },
         ]),
       },
     ],
@@ -415,6 +416,20 @@ describe('canvas slots (#32)', () => {
 });
 
 describe('dataframe_query continuation (#23)', () => {
+  it('returns an empty page on both surfaces when OFFSET is past the last row', async () => {
+    const { handle, canvasId } = await stageSpill();
+    const result = await runToolContract(dataframeQueryTool, {
+      canvas_id: canvasId,
+      sql: `SELECT occurrence_no FROM ${handle.table_name} ORDER BY occurrence_no LIMIT 10 OFFSET 501`,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({ rows: [], row_count: 0 });
+    expect(result.content).toEqual([
+      { type: 'text', text: expect.stringMatching(/"rows":\s*\[\].*"row_count":\s*0/s) },
+    ]);
+  });
+
   it('returns every wide row without a second byte cut', async () => {
     const { handle, canvasId } = await stageSpill();
     const ordered = `SELECT * FROM ${handle.table_name} ORDER BY occurrence_no`;
@@ -439,6 +454,81 @@ describe('dataframe_query continuation (#23)', () => {
     );
     expect(first.notice).toBeUndefined();
   });
+});
+
+describe('SQL over staged occurrence data', () => {
+  it.each(['SHOW', 'DESCRIBE'])('lists columns for %s on a staged table', async (statement) => {
+    const { handle, canvasId } = await stageSpill(5, 1);
+    const result = await runToolContract(dataframeQueryTool, {
+      canvas_id: canvasId,
+      sql: `${statement} ${handle.table_name}`,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      rows: expect.arrayContaining([
+        expect.objectContaining({ column_name: 'occurrence_no', column_type: 'BIGINT' }),
+      ]),
+    });
+    expect(result.content).toEqual([
+      {
+        type: 'text',
+        text: expect.stringMatching(/"column_name":\s*"occurrence_no".*"column_type":\s*"BIGINT"/s),
+      },
+    ]);
+  });
+
+  it.each([
+    ['range(1, 4)', 'range'],
+    ['generate_series(1, 3)', 'generate_series'],
+  ])('joins staged occurrences with %s', async (series, column) => {
+    const { handle, canvasId } = await stageSpill(5, 1);
+    const result = await runToolContract(dataframeQueryTool, {
+      canvas_id: canvasId,
+      sql: `SELECT CAST(s.${column} AS INTEGER) AS duckdb_columns FROM ${series} s JOIN ${handle.table_name} o ON CAST(o.occurrence_no AS INTEGER) = s.${column} ORDER BY s.${column}`,
+    });
+
+    const expected = {
+      rows: [{ duckdb_columns: 1 }, { duckdb_columns: 2 }, { duckdb_columns: 3 }],
+      row_count: 3,
+    };
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual(expected);
+    const [block] = result.content ?? [];
+    expect(block?.type).toBe('text');
+    if (block?.type === 'text') expect(JSON.parse(block.text)).toEqual(expected);
+  });
+
+  it.each(['SHOW', 'DESCRIBE', 'SUMMARIZE'])(
+    'reports a missing table for %s',
+    async (statement) => {
+      const { canvasId } = await stageSpill(5, 1);
+      const result = await runToolContract(dataframeQueryTool, {
+        canvas_id: canvasId,
+        sql: `${statement} missing_occurrences`,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.NotFound,
+          data: {
+            reason: 'missing_table',
+            tableName: 'missing_occurrences',
+            recovery: { hint: expect.stringContaining("this server's dataframe-describe tool") },
+          },
+        },
+      });
+      expect(result.content).toEqual([
+        {
+          type: 'text',
+          text: expect.stringMatching(
+            /missing_occurrences.*Recovery:.*dataframe.describe.*missing_table/s,
+          ),
+        },
+      ]);
+    },
+  );
 });
 
 describe('canvas cap recovery (#35)', () => {

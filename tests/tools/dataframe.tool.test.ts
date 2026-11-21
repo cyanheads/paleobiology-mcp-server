@@ -240,7 +240,8 @@ describe('paleobiology_dataframe_describe', () => {
           rowCount: 320,
           columns: [
             { name: 'occurrence_no', type: 'BIGINT', nullable: false },
-            { name: 'formation', type: 'VARCHAR', nullable: true },
+            { name: 'formation', type: 'VARCHAR', engineType: 'VARCHAR', nullable: true },
+            { name: 'age', type: 'DOUBLE', engineType: 'DECIMAL(10,2)', nullable: false },
           ],
         },
       ]),
@@ -250,6 +251,7 @@ describe('paleobiology_dataframe_describe', () => {
     const input = dataframeDescribeTool.input.parse({ canvas_id: 'abc1234567' });
     const result = await dataframeDescribeTool.handler(input, ctx);
 
+    expect(instance.describe).toHaveBeenCalledWith({ signal: ctx.signal });
     expect(result).toEqual(expect.schemaMatching(dataframeDescribeTool.output));
     expect(result.tables[0]).toMatchObject({
       name: 'occurrences_abc1234567',
@@ -257,9 +259,15 @@ describe('paleobiology_dataframe_describe', () => {
       row_count: 320,
     });
     expect(result.tables[0]?.columns[0]).toMatchObject({ name: 'occurrence_no', type: 'BIGINT' });
+    expect(result.tables[0]?.columns[2]).toMatchObject({
+      name: 'age',
+      type: 'DOUBLE',
+      engine_type: 'DECIMAL(10,2)',
+    });
     const text = renderText(dataframeDescribeTool.format?.(result));
     expect(text).toContain('occurrences_abc1234567');
     expect(text).toContain('`occurrence_no` BIGINT');
+    expect(text).toContain('`age` DOUBLE (DuckDB type `DECIMAL(10,2)`)');
   });
 
   it('renders a clear message and valid output when no tables are staged', async () => {

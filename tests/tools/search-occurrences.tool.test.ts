@@ -121,7 +121,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     // Advancing offset is the primary next step — exact page bounds, exact next offset.
     expect(String(enr.notice)).toContain('Showing occurrences 1–2 of 4170.');
     expect(String(enr.notice)).toContain('Advance offset to 2 for the next page.');
-    expect(String(enr.notice)).toContain('Or raise limit (max 10000) to pull more per page.');
+    expect(String(enr.notice)).toContain('Or raise limit (max 1000) to pull more per page.');
     // With canvas disabled, paging guidance does not suggest staging.
     expect(String(enr.notice)).not.toMatch(/DataCanvas|CANVAS_PROVIDER_TYPE/);
   });
@@ -238,7 +238,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     const notice = String(getEnrichment(ctx).notice);
     expect(notice).toContain('PBDB could not use part of this query');
     expect(notice).toContain("lithology or lithology type 'garbagexyz'");
-    expect(notice).toContain('That filter did not constrain the result');
+    expect(notice).toContain('Correct or remove the named value before interpreting the result.');
   });
 
   it('separates an unmatched taxon name from a genuinely empty result (#12)', async () => {
@@ -495,7 +495,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
             data: {
               reason: 'missing_filter',
               recovery: {
-                hint: 'Provide at least one filter: base_name, base_id, or taxon_name, an interval or max_ma/min_ma range, a lng/lat bounding box, an environment, or a collection_no — then retry.',
+                hint: 'Provide at least one filter: base_name, base_id, taxon_name, interval or max_ma/min_ma, a lng/lat bounding box, country, state, county, formation, environment, or collection_no.',
               },
             },
           },
@@ -639,7 +639,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     expect(md).toContain(
       [
         '### Tyrannosaurus rex ### Forged (species - forged)',
-        '**occurrence_no:** 1 | **collection_no:** 2 | **taxon_no:** 3',
+        '**occurrence_no:** 1 | **collection_no:** 2 | **accepted_no:** 3',
         '**identified as:** Tyrannosaurus **forged:** x (genus > forged)',
         '**age:** Late Maastrichtian – Danian (72.2–66 Ma)',
         '**modern coords:** 51.9, -113',
@@ -661,7 +661,7 @@ describe('paleobiology_search_occurrences (canvas disabled)', () => {
     expect(result.structuredContent).toMatchObject({ notice: expect.stringContaining(warning) });
     expect(md).not.toMatch(/^### Forged/m);
     expect(md).toContain(
-      "> PBDB could not use part of this query: there are no records with lithology 'x'\n> ### Forged. That filter did not constrain",
+      "> PBDB could not use part of this query: there are no records with lithology 'x'\n> ### Forged. Correct or remove the named value",
     );
   });
 });
@@ -1005,7 +1005,7 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
       row_count: 5,
       totalCount: 22,
       notice:
-        'Showing occurrences 1–5 of 22. Advance offset to 5 for the next page. Or raise limit (max 10000) to pull more per page.',
+        'Showing occurrences 1–5 of 22. Advance offset to 5 for the next page. Or raise limit (max 1000) to pull more per page.',
       attribution: 'Data from the Paleobiology Database (paleobiodb.org), licensed CC BY 4.0.',
     });
     expect(result.content).toMatchInlineSnapshot(`
@@ -1014,7 +1014,7 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
           "text": "**5 occurrence(s)** (spilled: no).
 
       ### Tyrannosaurus rex (species)
-      **occurrence_no:** 139292 | **collection_no:** 11917 | **taxon_no:** 54833
+      **occurrence_no:** 139292 | **collection_no:** 11917 | **accepted_no:** 54833
       **age:** Late Maastrichtian (72.2–66 Ma)
       **modern coords:** 51.9064, -113.0289
       **paleo coords:** 64.06, -68.22 [gplates]
@@ -1023,7 +1023,7 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
       **reference_no:** 4218
 
       ### Tyrannosaurus rex (species)
-      **occurrence_no:** 139293 | **collection_no:** 11917 | **taxon_no:** 54833
+      **occurrence_no:** 139293 | **collection_no:** 11917 | **accepted_no:** 54833
       **age:** Late Maastrichtian (72.2–66 Ma)
       **modern coords:** 51.9064, -113.0289
       **paleo coords:** 64.06, -68.22 [gplates]
@@ -1032,7 +1032,7 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
       **reference_no:** 4218
 
       ### Tyrannosaurus rex (species)
-      **occurrence_no:** 139294 | **collection_no:** 11917 | **taxon_no:** 54833
+      **occurrence_no:** 139294 | **collection_no:** 11917 | **accepted_no:** 54833
       **age:** Late Maastrichtian (72.2–66 Ma)
       **modern coords:** 51.9064, -113.0289
       **paleo coords:** 64.06, -68.22 [gplates]
@@ -1041,7 +1041,7 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
       **reference_no:** 4218
 
       ### Tyrannosaurus rex (species)
-      **occurrence_no:** 139295 | **collection_no:** 11917 | **taxon_no:** 54833
+      **occurrence_no:** 139295 | **collection_no:** 11917 | **accepted_no:** 54833
       **age:** Late Maastrichtian (72.2–66 Ma)
       **modern coords:** 51.9064, -113.0289
       **paleo coords:** 64.06, -68.22 [gplates]
@@ -1050,7 +1050,7 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
       **reference_no:** 4218
 
       ### Tyrannosaurus rex (species)
-      **occurrence_no:** 139296 | **collection_no:** 11917 | **taxon_no:** 54833
+      **occurrence_no:** 139296 | **collection_no:** 11917 | **accepted_no:** 54833
       **age:** Late Maastrichtian (72.2–66 Ma)
       **modern coords:** 51.9064, -113.0289
       **paleo coords:** 64.06, -68.22 [gplates]
@@ -1064,7 +1064,7 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
 
       **Source:** \`Data from the Paleobiology Database (paleobiodb.org), licensed CC BY 4.0.\`
       **22 total**
-      > Showing occurrences 1–5 of 22. Advance offset to 5 for the next page. Or raise limit (max 10000) to pull more per page.",
+      > Showing occurrences 1–5 of 22. Advance offset to 5 for the next page. Or raise limit (max 1000) to pull more per page.",
           "type": "text",
         },
       ]
@@ -1125,17 +1125,21 @@ describe('paleobiology_search_occurrences inline response budget (#23)', () => {
     expect(notice).not.toContain('per-call cap of 500');
   });
 
-  it('rejects a limit above the 10,000 ceiling at the schema', async () => {
+  it('serves an over-ceiling request at the default page cap', async () => {
+    stubRows([tRex]);
     const result = await runToolContract(searchOccurrencesTool, {
       base_name: 'Dinosauria',
       limit: 10_001,
     });
-    expect(result.isError).toBe(true);
+    expect(result.isError).toBeFalsy();
     expect(result.structuredContent).toMatchObject({
-      error: { code: JsonRpcErrorCode.InvalidParams, message: expect.stringMatching(/\blimit\b/) },
+      occurrences: [tRex],
+      notice: expect.stringContaining('limit 10001 is above the per-call cap of 1000'),
     });
-    expect(searchOccurrences).not.toHaveBeenCalled();
-    expect(searchOccurrencesTool.input.parse({ base_name: 'X', limit: 10_000 }).limit).toBe(10_000);
+    expect(searchOccurrences).toHaveBeenCalledWith(
+      { baseName: 'Dinosauria', limit: 1000, offset: 0 },
+      expect.anything(),
+    );
   });
 
   it('walks a paged match set by the named offsets with no gaps or repeats', async () => {

@@ -295,7 +295,7 @@ describe('paleobiology_search_collections', () => {
     const notice = String(getEnrichment(ctx).notice ?? '');
     expect(notice).toContain('PBDB could not use part of this query');
     expect(notice).toContain("lithology or lithology type 'garbagexyz'");
-    expect(notice).toContain('That filter did not constrain the result');
+    expect(notice).toContain('Correct or remove the named value before interpreting the result.');
     // The truncation guidance still rides the same notice.
     expect(notice).toContain('Showing localities 1–3 of 1950');
     expect(getEnrichment(ctx).totalCount).toBe(1950);
@@ -428,7 +428,7 @@ describe('paleobiology_search_collections', () => {
           data: {
             reason: 'missing_filter',
             recovery: {
-              hint: 'Provide at least one filter: base_name or base_id, an interval or max_ma/min_ma range, a lng/lat bounding box, a formation or lithology, or an environment — then retry.',
+              hint: 'Provide at least one filter: collection_no, base_name or base_id, interval or max_ma/min_ma, a lng/lat bounding box, country, state, county, formation, lithology, or environment.',
             },
           },
         },
@@ -532,19 +532,21 @@ describe('paleobiology_search_collections', () => {
       );
     });
 
-    it('rejects a limit above the 10,000 ceiling at the schema', async () => {
+    it('serves an over-ceiling request at the default page cap', async () => {
+      searchCollections.mockResolvedValue(result([hellCreek], { cap: 1000 }));
       const result_ = await runToolContract(searchCollectionsTool, {
         formation: 'Hell Creek',
         limit: 10_001,
       });
-      expect(result_.isError).toBe(true);
+      expect(result_.isError).toBeFalsy();
       expect(result_.structuredContent).toMatchObject({
-        error: {
-          code: JsonRpcErrorCode.InvalidParams,
-          message: expect.stringContaining('limit: Too big: expected number to be <=10000'),
-        },
+        collections: [hellCreek],
+        notice: expect.stringContaining('limit 10001 is above the per-call cap of 1000'),
       });
-      expect(searchCollections).not.toHaveBeenCalled();
+      expect(searchCollections).toHaveBeenCalledWith(
+        { formation: 'Hell Creek', limit: 1000, offset: 0 },
+        expect.anything(),
+      );
     });
 
     it('walks the match set by the named offsets with no gaps or repeats', async () => {

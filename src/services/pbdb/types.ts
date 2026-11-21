@@ -15,6 +15,8 @@
  * @module services/pbdb/types
  */
 
+import type { DiversitySummary } from './diversity-summary.js';
+
 /** PBDB taxonomic rank. Widened with `string` — PBDB ranks vary (e.g. "unranked clade"). */
 export type TaxonRank =
   | 'subspecies'
@@ -41,11 +43,14 @@ export type DiversityResolution = 'period' | 'epoch' | 'age';
 /** Taxa to count in a diversity curve. */
 export type DiversityCount = 'genera' | 'species' | 'families';
 
-/** Geologic-interval level in the bundled ICS time scale — the ranks the list tool filters on. */
+/** PBDB temporal selection and diversity binning rules exposed to callers. */
+export const DIVERSITY_TIME_RULES = ['contain', 'major', 'overlap'] as const;
+
+/** Geologic-interval level in PBDB's international time scale. */
 export type IntervalLevel = 'eon' | 'era' | 'period' | 'epoch' | 'age';
 
 /**
- * The rank of any interval, bundled or upstream. The bundled ICS scale uses only
+ * The rank of any interval, bundled or upstream. The bundled PBDB scale uses only
  * the five {@link IntervalLevel} values; PBDB's other 64 time scales add `subage`,
  * `subepoch`, `zone`, `subzone`, `chron`, `subchron`, and `bin`, so an interval
  * resolved upstream widens to `string` — same treatment as {@link TaxonRank}.
@@ -134,7 +139,7 @@ export interface PbdbDiversityRecord {
   X_Ft?: number; // first occ in bin, crosses TOP boundary
 }
 
-/** Raw `/colls/list` record (vocab=pbdb, show=loc,strat,lith,env,time). */
+/** Raw `/colls/list` record (vocab=pbdb, show=loc,strat,lith,env,time,paleoloc). */
 export interface PbdbCollectionRecord {
   cc?: string;
   collection_aka?: string;
@@ -155,6 +160,9 @@ export interface PbdbCollectionRecord {
   member?: string;
   min_ma?: number;
   n_occs?: number | string;
+  paleolat?: number | string;
+  paleolng?: number | string;
+  paleomodel?: string;
   reference_no?: string;
   state?: string;
 }
@@ -198,6 +206,7 @@ export interface PbdbEnvelope<T> {
   records?: T[];
   records_found?: number;
   records_returned?: number;
+  summary?: unknown;
   warnings?: string[];
 }
 
@@ -226,6 +235,7 @@ export interface PbdbSearchMeta {
 export interface PbdbResponse<T> {
   meta: PbdbSearchMeta;
   records: T[];
+  summary?: unknown;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -295,7 +305,7 @@ export interface Taxon {
   /** True when immediate children remain past this page. Set alongside `children`. */
   children_truncated?: boolean;
   classification: TaxonClassification;
-  extant: boolean;
+  extant?: boolean;
   name?: string;
   occurrence_count?: number;
   parent_name?: string;
@@ -340,7 +350,7 @@ export interface DiversityBin {
 }
 
 /**
- * One geologic time interval — from the bundled ICS snapshot, or resolved
+ * One geologic time interval — from the bundled PBDB snapshot, or resolved
  * upstream when the snapshot has no interval by that name.
  */
 export interface Interval {
@@ -355,7 +365,7 @@ export interface Interval {
   /**
    * The PBDB time scale this interval belongs to (e.g. "Mesozoic Subages").
    * Set only on an upstream-resolved interval — every bundled interval is on the
-   * International Chronostratigraphic Timescale, which `snapshot_version` names.
+   * PBDB international scale, which `snapshot_version` names.
    */
   scale?: string;
 }
@@ -379,6 +389,9 @@ export interface Collection {
   member?: string;
   min_ma?: number;
   n_occs?: number;
+  paleolat?: number;
+  paleolng?: number;
+  paleomodel?: string;
   reference_no?: number;
   state?: string;
 }
@@ -391,6 +404,7 @@ export interface OccurrenceFilter {
   /** Restrict to occurrences from a single collection (locality) — PBDB `coll_id`. */
   collectionNo?: number;
   country?: string;
+  county?: string;
   environment?: EnvironmentFilter;
   formation?: string;
   interval?: string;
@@ -403,6 +417,7 @@ export interface OccurrenceFilter {
   minMa?: number;
   /** Rows to skip before this page — PBDB `offset`, paired with `limit`. */
   offset: number;
+  state?: string;
   taxonName?: string;
 }
 
@@ -422,7 +437,10 @@ export interface CollectionFilter {
   /** Clade-inclusive taxon id — PBDB `base_id=txn:<n>`. Mutually exclusive with `baseName`. */
   baseId?: number;
   baseName?: string;
+  /** Restrict to known locality IDs — comma-separated PBDB `coll_id`. */
+  collectionNos?: number[];
   country?: string;
+  county?: string;
   environment?: EnvironmentFilter;
   formation?: string;
   interval?: string;
@@ -435,6 +453,7 @@ export interface CollectionFilter {
   maxMa?: number;
   minMa?: number;
   offset: number;
+  state?: string;
 }
 
 /**
@@ -447,6 +466,7 @@ export interface DiversityFilter {
   baseName?: string;
   count: DiversityCount;
   country?: string;
+  county?: string;
   environment?: EnvironmentFilter;
   formation?: string;
   interval?: string;
@@ -459,6 +479,8 @@ export interface DiversityFilter {
   /** Extend known extant taxa to the present; false omits PBDB's presence parameter. */
   recent?: boolean;
   resolution: DiversityResolution;
+  state?: string;
+  timerule?: (typeof DIVERSITY_TIME_RULES)[number];
 }
 
 /** A paged collection result with truncation disclosure. */
@@ -478,9 +500,10 @@ export interface CollectionResult {
   warnings?: string[];
 }
 
-/** A diversity curve plus any non-fatal upstream warnings. */
+/** A diversity curve with optional upstream coverage and warnings. */
 export interface DiversityResult {
   bins: DiversityBin[];
+  summary?: DiversitySummary;
   warnings?: string[];
 }
 

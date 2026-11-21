@@ -22,6 +22,12 @@
       "version": "0.5.0",
       "environmentVariables": [
         {
+          "name": "PBDB_CLAMP_LIMITS",
+          "description": "Serve requests above 10,000 at the effective inline page cap.",
+          "format": "boolean",
+          "default": "true"
+        },
+        {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
           "format": "string",
@@ -40,6 +46,12 @@
       "runtimeHint": "npx",
       "version": "0.5.0",
       "environmentVariables": [
+        {
+          "name": "PBDB_CLAMP_LIMITS",
+          "description": "Serve requests above 10,000 at the effective inline page cap.",
+          "format": "boolean",
+          "default": "true"
+        },
         {
           "name": "MCP_TRANSPORT_TYPE",
           "description": "Selects the HTTP transport.",

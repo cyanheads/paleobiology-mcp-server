@@ -2,7 +2,7 @@
  * @fileoverview Handler tests for paleobiology_list_intervals and the
  * canvas-disabled failure on paleobiology_dataframe_query.
  *
- * The bundled ICS snapshot answers offline; only a name the snapshot does not
+ * The bundled PBDB snapshot answers offline; only a name the snapshot does not
  * carry reaches PBDB. `lookupInterval` is mocked to a spy so both halves of that
  * contract are assertable: every bundled path asserts the spy was NOT called, and
  * the miss paths drive the upstream hit, the upstream miss, and the upstream
@@ -131,7 +131,7 @@ describe('paleobiology_list_intervals', () => {
     });
     expect(result.intervals[0]).not.toHaveProperty('scale');
     expect(result.source).toBe('bundled_ics');
-    expect(result.snapshot_version).toMatch(/^ICS /);
+    expect(result.snapshot_version).toMatch(/^PBDB international scale/);
     expect(getEnrichment(ctx)).toMatchObject({ totalCount: 1 });
     // The offline guarantee: a name the snapshot knows never reaches the network.
     expect(lookupInterval).not.toHaveBeenCalled();
@@ -377,7 +377,7 @@ describe('paleobiology_list_intervals', () => {
     const input = listIntervalsTool.input.parse({ name: 'Jurassic' });
     const result = await listIntervalsTool.handler(input, ctx);
     const text = renderText(listIntervalsTool.format?.(result));
-    expect(text).toMatch(/Geologic intervals.*ICS.*source: bundled_ics/s);
+    expect(text).toMatch(/Geologic intervals.*PBDB international scale.*source: bundled_ics/s);
   });
 
   it('renders every output field in format() (parity smoke-check)', async () => {

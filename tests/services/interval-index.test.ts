@@ -6,15 +6,29 @@
 
 import { describe, expect, it } from 'vitest';
 import { IntervalIndex } from '@/services/intervals/interval-index.js';
-import { ICS_INTERVALS } from '@/services/intervals/time-scale-data.js';
+import { INTERNATIONAL_INTERVALS } from '@/services/intervals/time-scale-data.js';
 
-const index = new IntervalIndex(ICS_INTERVALS);
+const index = new IntervalIndex(INTERNATIONAL_INTERVALS);
 
 describe('IntervalIndex', () => {
-  it('bundles the ICS scale with every level present', () => {
+  it('bundles the PBDB international scale with every level present', () => {
     const levels = new Set(index.all().map((iv) => iv.level));
     expect(levels).toEqual(new Set(['eon', 'era', 'period', 'epoch', 'age']));
     expect(index.all().length).toBeGreaterThan(150);
+  });
+
+  it.each([
+    ['Anisian', 247, 241.464],
+    ['Middle Triassic', 247, 237],
+    ['Early Triassic', 251.902, 247],
+    ['Induan', 251.902, 250.8],
+    ['Olenekian', 250.8, 247],
+    ['Lopingian', 259.857, 251.902],
+    ['Wuchiapingian', 259.857, 254.14],
+    ['Guadalupian', 274.4, 259.857],
+    ['Capitanian', 264.28, 259.857],
+  ])('pins the captured PBDB boundaries of %s', (name, max, min) => {
+    expect(index.byName(name)).toMatchObject({ max_ma: max, min_ma: min });
   });
 
   it('resolves a named interval case-insensitively to its Ma boundaries', () => {
@@ -101,6 +115,8 @@ describe('IntervalIndex', () => {
   });
 
   it('exposes a citable snapshot version', () => {
-    expect(index.snapshotVersion).toMatch(/^ICS .+snapshot generated/);
+    expect(index.snapshotVersion).toMatch(
+      /^PBDB international scale \(scale_id=1, snapshot captured \d{4}-\d{2}-\d{2}\)$/,
+    );
   });
 });

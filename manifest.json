@@ -20,6 +20,7 @@
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
         "CANVAS_PROVIDER_TYPE": "none",
+        "PBDB_CLAMP_LIMITS": "${user_config.PBDB_CLAMP_LIMITS}",
         "NODE_ENV": "production"
       }
     }
@@ -29,5 +30,12 @@
   },
   "tools_generated": true,
   "prompts_generated": true,
-  "user_config": {}
+  "user_config": {
+    "PBDB_CLAMP_LIMITS": {
+      "type": "boolean",
+      "title": "Clamp large page requests",
+      "description": "Serve requests above 10,000 at the effective inline page cap.",
+      "default": true
+    }
+  }
 }

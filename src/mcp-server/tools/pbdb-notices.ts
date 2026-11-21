@@ -15,16 +15,14 @@
  */
 
 /**
- * Disclose that PBDB ignored part of the query, preserving its warning text.
+ * Preserve PBDB's warning text. An unresolved value can yield no matches or
+ * leave the other selectors in force, depending on the filter.
  * The framework quotes each notice line when rendering the content[] trailer.
  * Returns `undefined` when there is nothing to disclose, so it composes away.
  */
 export function ignoredFilterNotice(warnings: string[] | undefined): string | undefined {
   if (!warnings || warnings.length === 0) return;
-  return (
-    `PBDB could not use part of this query: ${warnings.join('; ')}. That filter did not constrain ` +
-    'the result — correct the value or drop it before treating these records as a match on it.'
-  );
+  return `PBDB could not use part of this query: ${warnings.join('; ')}. Correct or remove the named value before interpreting the result.`;
 }
 
 /** Join the present notice fragments into one string (the enrichment holds a single notice). */

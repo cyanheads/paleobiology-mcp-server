@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 import { afterAll, describe, expect, it } from 'vitest';
 
 const ENTRY = new URL('../../src/index.ts', import.meta.url).pathname;
@@ -19,9 +20,15 @@ const cwd = mkdtempSync(join(tmpdir(), 'paleo-registration-'));
 afterAll(() => rmSync(cwd, { recursive: true, force: true }));
 
 interface StartResult {
+  diagnostic: string;
   exitCode: number | null;
   stderr: string;
-  tools?: string[];
+  tools?: AdvertisedTool[];
+}
+
+interface AdvertisedTool {
+  inputSchema: { properties: { limit?: { maximum?: number } } };
+  name: string;
 }
 
 /** Start the server with only the given env, list its tools, then stop it. */
@@ -37,41 +44,67 @@ function start(env: Record<string, string>): Promise<StartResult> {
     },
     stdio: 'pipe',
   });
-  let stdout = '';
   let stderr = '';
-  let tools: string[] | undefined;
-  child.stderr.on('data', (d: Buffer) => {
-    stderr += d;
-  });
-  child.stdout.on('data', (d: Buffer) => {
-    stdout += d;
-    for (const line of stdout.split('\n')) {
-      if (!line.startsWith('{')) continue;
-      const msg = JSON.parse(line) as { id?: number; result?: { tools: { name: string }[] } };
-      if (msg.id === 1 && msg.result) {
-        tools = msg.result.tools.map((t) => t.name);
-        child.kill('SIGTERM');
-      }
-    }
-  });
-  const send = (m: object) => child.stdin.write(`${JSON.stringify(m)}\n`);
-  send({
-    jsonrpc: '2.0',
-    id: 0,
-    method: 'initialize',
-    params: {
-      protocolVersion: '2025-06-18',
-      capabilities: {},
-      clientInfo: { name: 'registration-test', version: '0' },
-    },
-  });
-  send({ jsonrpc: '2.0', method: 'notifications/initialized' });
-  send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-  const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+  let tools: AdvertisedTool[] | undefined;
+  let phase = 'initialize';
+  let problem: string | undefined;
+  const send = (message: object) => child.stdin.write(`${JSON.stringify(message)}\n`);
+  const fail = (detail: string) => {
+    problem ??= `${phase}: ${detail}`;
+    child.kill('SIGTERM');
+  };
   return new Promise((resolve) => {
-    child.on('exit', (exitCode) => {
+    const timer = setTimeout(() => {
+      problem ??= `Timed out waiting for ${phase}`;
+      child.kill('SIGKILL');
+    }, 15_000);
+    child.on('error', (error) => fail(`Child process error: ${error.message}`));
+    child.stdin.on('error', (error) => fail(`Could not write to stdin: ${error.message}`));
+    child.stderr.setEncoding('utf8').on('data', (text: string) => {
+      stderr += text;
+    });
+    createInterface({ input: child.stdout }).on('line', (line) => {
+      if (!line.trim()) return;
+      try {
+        const message = JSON.parse(line) as {
+          id?: number;
+          result?: { protocolVersion?: string; tools?: AdvertisedTool[] };
+        };
+        if (message.id === undefined) return;
+        if (phase === 'initialize' && message.id === 0 && message.result?.protocolVersion) {
+          phase = 'tools/list';
+          send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+          send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+        } else if (
+          phase === 'tools/list' &&
+          message.id === 1 &&
+          Array.isArray(message.result?.tools)
+        ) {
+          tools = message.result.tools;
+          phase = 'shutdown';
+          child.kill('SIGTERM');
+        } else {
+          fail(`Unexpected MCP response: ${line}`);
+        }
+      } catch {
+        fail(`Invalid JSON on stdout: ${line}`);
+      }
+    });
+    child.once('close', (exitCode, signal) => {
       clearTimeout(timer);
-      resolve(tools ? { exitCode, stderr, tools } : { exitCode, stderr });
+      const diagnostic = `${problem ?? `Last phase: ${phase}`}. Exit code: ${exitCode}. Signal: ${signal}.\nStderr:\n${stderr}`;
+      const result = { exitCode, stderr, diagnostic };
+      resolve(tools && !problem ? { ...result, tools } : result);
+    });
+    send({
+      jsonrpc: '2.0',
+      id: 0,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'registration-test', version: '0' },
+      },
     });
   });
 }
@@ -91,6 +124,11 @@ describe('dataframe tool registration', { timeout: 20_000 }, () => {
     ['canvas defaults on', {}, [...DOMAIN_TOOLS, ...QUERY_AND_DESCRIBE]],
     ['canvas off', { CANVAS_PROVIDER_TYPE: 'none' }, DOMAIN_TOOLS],
     [
+      'canvas off, limit clamping off',
+      { CANVAS_PROVIDER_TYPE: 'none', PBDB_CLAMP_LIMITS: 'false' },
+      DOMAIN_TOOLS,
+    ],
+    [
       'canvas off, drop flag on',
       { CANVAS_PROVIDER_TYPE: 'none', PALEOBIOLOGY_DATAFRAME_DROP_ENABLED: 'true' },
       DOMAIN_TOOLS,
@@ -103,13 +141,27 @@ describe('dataframe tool registration', { timeout: 20_000 }, () => {
     ],
   ])('%s → lists exactly the expected tools', async (_label, env, expected) => {
     const result = await start(env);
-    expect(result.tools).toStrictEqual(expected);
+    expect(result.exitCode, result.diagnostic).toBe(0);
+    expect(
+      result.tools?.map((tool) => tool.name),
+      result.diagnostic,
+    ).toStrictEqual(expected);
+    for (const name of ['paleobiology_search_occurrences', 'paleobiology_search_collections']) {
+      const limit = result.tools?.find((tool) => tool.name === name)?.inputSchema.properties.limit;
+      expect(limit).toMatchObject({ type: 'integer', minimum: 1, default: 100 });
+      if ('PBDB_CLAMP_LIMITS' in env) {
+        expect(limit?.maximum).toBe(10000);
+      } else {
+        expect(limit?.maximum ?? Number.POSITIVE_INFINITY).toBeGreaterThan(10000);
+      }
+    }
   });
 });
 
 describe('invalid server env var', { timeout: 20_000 }, () => {
   it.each([
     ['PBDB_TIMEOUT_MS', 'PBDB_TIMEOUT_MS', { PBDB_TIMEOUT_MS: 'abc' }],
+    ['PBDB_CLAMP_LIMITS', 'PBDB_CLAMP_LIMITS', { PBDB_CLAMP_LIMITS: 'maybe' }],
     [
       'PBDB_TIMEOUT_MS with the drop flag',
       'PBDB_TIMEOUT_MS',
@@ -125,7 +177,7 @@ describe('invalid server env var', { timeout: 20_000 }, () => {
     async (_label, variable, env) => {
       const result = await start(env);
       expect(result.tools).toBeUndefined();
-      expect(result.exitCode).toBe(1);
+      expect(result.exitCode, result.diagnostic).toBe(1);
       expect(result.stderr).toContain(`${variable} (`);
       expect(result.stderr).not.toMatch(/^\s+at /m);
       expect(result.stderr).not.toContain('throw configurationError(');

@@ -12,7 +12,7 @@
     "ignorePatterns": []
   },
   "outdated": {
-    "allowlist": []
+    "allowlist": ["@duckdb/node-api"]
   },
   "lint": {},
   "packaging": {

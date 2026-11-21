@@ -1,6 +1,6 @@
 # paleobiology-mcp-server - Directory Structure
 
-Generated on: 2026-11-01 06:08:57
+Generated on: 2026-11-21 17:46:55
 
 ```text
 paleobiology-mcp-server/
@@ -178,6 +178,7 @@ paleobiology-mcp-server/
 │   │   │   ├── interval-index.ts
 │   │   │   └── time-scale-data.ts
 │   │   ├── pbdb/
+│   │   │   ├── diversity-summary.ts
 │   │   │   ├── pbdb-service.ts
 │   │   │   └── types.ts
 │   │   └── canvas-accessor.ts
@@ -215,8 +216,11 @@ paleobiology-mcp-server/
 │       ├── occurrence-canvas.test.ts
 │       ├── one-line.test.ts
 │       ├── output-policy.test.ts
+│       ├── pbdb-analysis-contracts.test.ts
 │       ├── search-collections.tool.test.ts
+│       ├── search-locality-filters.test.ts
 │       ├── search-occurrences.tool.test.ts
+│       ├── search-page-limits.test.ts
 │       └── tool-registration.test.ts
 ├── .dockerignore
 ├── .env.example

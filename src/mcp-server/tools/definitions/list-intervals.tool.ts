@@ -1,7 +1,7 @@
 /**
  * @fileoverview paleobiology_list_intervals — the geologic time scale lookup.
  * Translates named intervals ↔ absolute Ma boundaries. Browsing and every name
- * on the bundled ICS international-scale snapshot are answered offline; a name
+ * on the bundled PBDB international-scale snapshot are answered offline; a name
  * the snapshot does not carry (PBDB's sub-stage and regional scales) costs one
  * upstream lookup, and the result names which source answered.
  * @module mcp-server/tools/definitions/list-intervals.tool
@@ -45,7 +45,7 @@ const IntervalSchema = z
       .string()
       .optional()
       .describe('Standard abbreviation (e.g. "K" for Cretaceous), when defined.'),
-    color: z.string().optional().describe('ICS chart hex color for this interval, when defined.'),
+    color: z.string().optional().describe('PBDB chart hex color for this interval, when defined.'),
     scale: z
       .string()
       .optional()
@@ -58,7 +58,7 @@ const IntervalSchema = z
 export const listIntervalsTool = tool('paleobiology_list_intervals', {
   title: 'paleobiology-mcp-server: list geologic intervals',
   description:
-    'Look up the geologic time scale — eons, eras, periods, epochs, and ages with their absolute-age boundaries in millions of years (Ma) and nesting. This is the reference that grounds every temporal filter on the other tools and translates a named interval like "Late Cretaceous" to its 100.5–66.0 Ma boundaries (and back). Filter by a name substring, a Ma range (overlap match), and/or a level; call with no filters to browse the full scale. Browsing and every name on the bundled ICS international-scale snapshot are answered offline. A name the snapshot does not carry — the sub-stage and regional names that occurrence and collection rows report, such as "Late Maastrichtian" or "Lancian" — costs one PBDB lookup across its other time scales; the response names which source answered and which scale the interval belongs to.',
+    'Look up the geologic time scale — eons, eras, periods, epochs, and ages with their absolute-age boundaries in millions of years (Ma) and nesting. This is the reference that grounds every temporal filter on the other tools and translates a named interval like "Late Cretaceous" to its 100.5–66.0 Ma boundaries (and back). Filter by a name substring, a Ma range (overlap match), and/or a level; call with no filters to browse the full scale. Browsing and every name on the bundled PBDB international-scale snapshot are answered offline. A name the snapshot does not carry — the sub-stage and regional names that occurrence and collection rows report, such as "Late Maastrichtian" or "Lancian" — costs one PBDB lookup across its other time scales; the response names which source answered and which scale the interval belongs to.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     name: blankAsUnset(z.string().optional()).describe(
@@ -93,7 +93,7 @@ export const listIntervalsTool = tool('paleobiology_list_intervals', {
       ),
     snapshot_version: z
       .string()
-      .describe('ICS chart version and generation date of the bundled time scale, for citation.'),
+      .describe('PBDB scale identifier and capture date of the bundled time scale, for citation.'),
   }),
   enrichment: {
     totalCount: z.number().describe('Number of intervals matched by the filters.'),

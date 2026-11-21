@@ -16,11 +16,11 @@ and when life existed across ~540 million years. Keyless, CC BY.
 
 | Tool | Summary | readOnlyHint | openWorldHint | Key inputs | Output shape |
 |---|---|---|---|---|---|
-| `paleobiology_search_occurrences` | Fossil occurrences by taxon, time, geography, formation, and environment. First-page spill stages a bounded matching set. | `true` | `true` | `base_name` \| `base_id` \| `taxon_name`, `collection_no`, `interval` \| (`max_ma`, `min_ma`), longitude/latitude bounds, `country`, `formation`, `environment`, `limit` (1–10,000, default 100; configured page cap applies), `offset`, `canvas_id` | `{ occurrences[], spilled, canvas_id?, table_name?, row_count }` + enrichment `totalCount`, `notice?` |
+| `paleobiology_search_occurrences` | Fossil occurrences by taxon, time, geography, formation, and environment. First-page spill stages a bounded matching set. | `true` | `true` | `base_name` \| `base_id` \| `taxon_name`, `collection_no`, `interval` \| (`max_ma`, `min_ma`), longitude/latitude bounds, `country`, `state`, `county`, `formation`, `environment`, `limit` (default 100, capped inline), `offset`, `canvas_id` | `{ occurrences[], spilled, canvas_id?, table_name?, row_count }` + enrichment `totalCount`, `notice?` |
 | `paleobiology_get_taxon` | Matched taxon record, accepted identity and status, classification, range, and optional children. | `true` | `true` | `name` \| `taxon_no`, `show_children` (default false), `children_offset` | `{ taxon { taxon_no, name, rank, accepted_no?, accepted_name, accepted_rank?, status?, … }, classification, parent?, children[], children_offset?, children_truncated?, range, occurrence_count }` |
-| `paleobiology_get_diversity` | Selected-set diversity and first/last appearances, with edge-bin and extant-policy notices. | `true` | `true` | `base_name` \| `base_id`, `count` (genera/species/families), `resolution` (period/epoch/age), `interval` \| (`max_ma`, `min_ma`), `country`, `formation`, `environment`, longitude/latitude bounds, `recent` (default false) | `{ bins[] }` plus policy/selection notices |
-| `paleobiology_list_intervals` | The geologic time scale: eons→ages with absolute-age boundaries (Ma) and nesting. Reference lookup that grounds every temporal filter; translates "Late Cretaceous" ↔ "100.5–66.0 Ma". Browsing and every international-scale name come from the bundled ICS snapshot with no upstream call; a name outside it (`Late Maastrichtian`, `Lancian`) costs one PBDB lookup across the other scales. | `true` | `true` | `name` (substring match against the snapshot, exact match upstream), `min_ma` (≥0), `max_ma` (≥0), `level` (enum: `"eon"` \| `"era"` \| `"period"` \| `"epoch"` \| `"age"`) | `{ intervals[{ …, scale? }], source, snapshot_version }` |
-| `paleobiology_search_collections` | Fossil localities with strata, lithology, environment, and occurrence count; paginated inline. | `true` | `true` | `base_name` \| `base_id`, `interval` \| (`max_ma`, `min_ma`), longitude/latitude bounds, `country`, `formation`, `lithology`, `environment`, `limit` (1–10,000, default 100; configured page cap applies), `offset` | `{ collections[{ collection_no, … }] }` + enrichment `totalCount?`, `truncated?`, `shown?`, `cap?`, `notice?` |
+| `paleobiology_get_diversity` | Selected-set diversity and first/last appearances, with edge-bin and extant-policy notices. | `true` | `true` | `base_name` \| `base_id`, `count` (genera/species/families), `resolution` (period/epoch/age), `interval` \| (`max_ma`, `min_ma`), `country`, `state`, `county`, `formation`, `environment`, longitude/latitude bounds, `recent` (default false), `timerule` (`major`, `contain`, `overlap`) | `{ bins[], summary? }` plus time-rule and selection notices |
+| `paleobiology_list_intervals` | The geologic time scale: eons→ages with absolute-age boundaries (Ma) and nesting. Reference lookup that grounds every temporal filter; translates "Late Cretaceous" ↔ "100.5–66.0 Ma". Browsing and every international-scale name come from the bundled PBDB international snapshot with no upstream call; a name outside it (`Late Maastrichtian`, `Lancian`) costs one PBDB lookup across the other scales. | `true` | `true` | `name` (substring match against the snapshot, exact match upstream), `min_ma` (≥0), `max_ma` (≥0), `level` (enum: `"eon"` \| `"era"` \| `"period"` \| `"epoch"` \| `"age"`) | `{ intervals[{ …, scale? }], source, snapshot_version }` |
+| `paleobiology_search_collections` | Fossil localities with strata, lithology, environment, and occurrence count; paginated inline. | `true` | `true` | `collection_no` (1–1,000 IDs), `base_name` \| `base_id`, `interval` \| (`max_ma`, `min_ma`), longitude/latitude bounds, `country`, `state`, `county`, `formation`, `lithology`, `environment`, `limit` (default 100, capped inline), `offset` | `{ collections[{ collection_no, … }] }` + enrichment `totalCount?`, `truncated?`, `shown?`, `cap?`, `notice?` |
 | `paleobiology_get_references` | Resolve the first 500 distinct reference IDs in one request; unattempted IDs return separately from misses. | `true` | `true` | `reference_nos` (nonempty positive-integer list; repeats resolved once) | `{ references[{ reference_no, citation, title?, year?, authors?, editors?, publication?, volume?, issue?, first_page?, last_page?, publisher?, language?, doi?, publication_type? }], not_found[], remaining_reference_nos? }` |
 | `paleobiology_dataframe_query` | Run a read-only SQL `SELECT` over occurrence result sets staged on a DataCanvas by `paleobiology_search_occurrences` (count by interval, group by formation/country, roll up by family, map by region). | `true` | `false` | `canvas_id`, `sql` (SELECT only) | `{ rows[], row_count, truncated? }` |
 | `paleobiology_dataframe_describe` | List the tables and columns staged on a canvas — discover names before writing SQL for `paleobiology_dataframe_query`. | `true` | `false` | `canvas_id` | `{ tables[{ name, kind, row_count, columns[] }] }` |
@@ -133,11 +133,8 @@ those records to readable fields before normalization. Raw codes never reach the
   modest backoff (degraded-upstream tier), and lean on the bundled interval snapshot so
   browsing the time scale and every international-scale name cost no request at all.
 - **Data freshness:** occurrence/taxon/diversity/collection data is live (queried per call).
-  The geologic time scale changes rarely (ICS revisions) and is bundled as a static snapshot;
-  document the snapshot's ICS version and refresh on ICS updates. The snapshot covers only the
-  ICS international scale, so a name from one of PBDB's other 64 scales — the sub-stage and
-  regional names occurrence and collection rows report — is resolved live on a snapshot miss
-  and labeled with its source and scale.
+  The geologic time scale ships as a dated snapshot of PBDB’s international scale.
+  A sub-stage or regional name outside the snapshot is resolved live and labeled with its source and scale.
 - **Paging:** PBDB list endpoints accept `limit` + `offset`, and `rowcount` adds
   `records_found` (the true match count, independent of paging) to the envelope. The list
   searches send it, so truncation is a known fact rather than an inference and the disclosure
@@ -145,7 +142,7 @@ those records to readable fields before normalization. Raw codes never reach the
   `ctx.enrich.total(...)`) states the real remainder. Cost: an upstream COUNT pass per call.
   PBDB's companion `records_returned` is not usable — it goes negative once `offset` runs past
   the end — so count the parsed rows instead.
-- **Zod constraints:** IDs are positive integers; Ma values are nonnegative; `limit` accepts 1–10,000 and defaults to 100; longitude spans −180…180 and latitude −90…90. Environment, count, resolution, and interval level use explicit enums. Country syntax is validated before upstream requests. Format constraints live in schemas, not only in descriptions.
+- **Zod constraints:** IDs are positive integers; Ma values are nonnegative; `limit` accepts positive integers and defaults to 100; longitude spans −180…180 and latitude −90…90. Environment, count, resolution, and interval level use explicit enums. Country syntax is validated before upstream requests. Format constraints live in schemas, not only in descriptions.
 
 **Out of scope (v1)**
 
@@ -215,7 +212,7 @@ interface Taxon {
   classification: {               // higher classification (from the `class` block)
     phylum?: string; class?: string; order?: string; family?: string; genus?: string;
   };
-  extant: boolean;                // ext flag — does the clade survive to today?
+  extant?: boolean;               // Omitted when PBDB has no extant-status opinion.
   occurrence_count: number;       // noc — number of fossil occurrences
   range: {                        // FAD/LAD, from the `app` block — each a Ma window:
     first_appearance: { max_ma: number; min_ma: number; early_interval: string };
@@ -252,11 +249,12 @@ interface Collection {
   collection_no: number;
   collection_name?: string;
   lng: number; lat: number;       // modern position
+  paleolng?: number; paleolat?: number; paleomodel?: string;
   early_interval: string; late_interval?: string; max_ma: number; min_ma: number;
   formation?: string;             // strata block
   lithology?: string;             // lith block
   environment?: string;           // env block — depositional environment
-  cc?: string; state?: string;
+  cc?: string; state?: string; county?: string;
   n_occs: number;                 // co-occurring fossils at this locality
   reference_no: number;
 }
@@ -289,19 +287,17 @@ to plain text once before tool and resource output.
 | Service | Responsibility | Key methods |
 |---|---|---|
 | `PbdbService` (`src/services/pbdb/pbdb-service.ts`) | The PBDB HTTP client. Builds requests with `vocab=pbdb` + per-tool `show` blocks, wraps `fetchWithTimeout` + `withRetry`, parses + normalizes compact responses into the `Data Model` types, and carries the envelope metadata — upstream `warnings[]` and the `rowcount` match count — out alongside the records. One method per resource family. `searchOccurrences` returns the normalized page with its envelope metadata (`{ rows, meta }`). `lookupInterval` is the exception to "one method per family" being purely record-shaped: it also resolves the `scale_no` → scale-name directory (a separate `timescales/list` call, cached per process) so an off-international-scale hit is labeled rather than tagged with an opaque number. | `searchOccurrences(filter)`, `getOccurrence(id)`, `getTaxon({name\|taxonNo, showChildren})`, `getDiversity(filter)`, `searchCollections(filter)`, `lookupInterval(name)`, `getReferences(referenceNos)` |
-| `IntervalIndex` (`src/services/intervals/interval-index.ts`) | In-memory index over the **bundled** geologic time-scale snapshot (the ICS international scale, `scale_id=1`). Backs the offline half of `paleobiology_list_intervals` — browsing and every international-scale name — with no network call, and provides name↔Ma resolution the other services use to validate/echo temporal filters. Small bounded set (171 intervals) → server-level in-memory index, not a `MirrorService` and not a DataCanvas. **Only the ICS international scale is bundled** — no `scale` input filter is exposed; the snapshot's ICS version and generation date are surfaced as `snapshot_version` in the `paleobiology_list_intervals` output so consumers can cite it. The index stays synchronous: the upstream fallback for a name it does not carry lives in the tool handler, which owns the network call and the `source` labeling. | `byName(name)`, `filter(opts)`, `all(level?)`, plus the module-level `filterIntervals(intervals, opts)` the handler reuses on an upstream hit |
+| `IntervalIndex` (`src/services/intervals/interval-index.ts`) | In-memory index over the **bundled** geologic time-scale snapshot (PBDB's international scale, `scale_id=1`). Backs the offline half of `paleobiology_list_intervals` — browsing and every international-scale name — with no network call, and provides name↔Ma resolution the other services use to validate/echo temporal filters. Small bounded set (171 intervals) → server-level in-memory index, not a `MirrorService` and not a DataCanvas. **Only PBDB's international scale is bundled** — no `scale` input filter is exposed; the scale identifier and snapshot date are surfaced as `snapshot_version` in the `paleobiology_list_intervals` output so consumers can cite it. The index stays synchronous: the upstream fallback for a name it does not carry lives in the tool handler, which owns the network call and the `source` labeling. | `byName(name)`, `filter(opts)`, `all(level?)`, plus the module-level `filterIntervals(intervals, opts)` the handler reuses on an upstream hit |
 | `canvas-accessor` (`src/services/canvas-accessor.ts`) | Module-level canvas accessor wired from `setup(core)`. First occurrence pages with further matches can stage a bounded matching set; dataframe tools query, describe, or drop its table. | `getCanvas()`, `setCanvas(core.canvas)` |
 
 The interval snapshot is a checked-in TypeScript module (`src/services/intervals/time-scale-data.ts`)
-derived once from PBDB `/intervals/list?scale_id=1` (the ICS international scale). It is loaded
-into the index at startup. Rationale: the time scale changes only on ICS revision (years
-apart), grounds every other tool's temporal filter, and bundling it makes the lookup instant
-and offline. (Not the `MirrorService` — that tier is for ~10⁴–10⁷-row corpora; 171 intervals
-is a plain in-memory index.)
+derived from PBDB `/intervals/list?scale_id=1`. Loading the 171 records into an index at
+startup keeps lookups offline. Refresh the snapshot against PBDB so its boundaries match
+the ones PBDB uses for filtering and diversity bins.
 
 **Decision — the snapshot is the default, the network is the fallback.** Bundling all 1,909
 intervals across PBDB's 65 scales would keep the tool fully offline but bloat the browse surface
-with mostly-regional rows and go stale; documenting the ICS-only scope would leave the natural
+with mostly-regional rows and go stale; documenting the international-only scope would leave the natural
 row → lookup chain broken, since occurrence and collection rows routinely report names from the
 sub-stage and regional scales. So the snapshot still answers browsing and every name it carries
 with no request, and only a name it does not carry at all reaches PBDB. A name the snapshot knows
@@ -323,6 +319,7 @@ to retry.
 | `PBDB_BASE_URL` | `pbdbBaseUrl` | optional | `https://paleobiodb.org/data1.2` | PBDB API base; override for a mirror/proxy or pinned API version. |
 | `PBDB_TIMEOUT_MS` | `pbdbTimeoutMs` | optional | `30000` | Per-request timeout. Diversity queries over large clades can take ~0.5s+ upstream; keep generous. |
 | `PBDB_MAX_OCCURRENCES` | `pbdbMaxOccurrences` | optional | `1000` | Inline occurrence/collection page cap, applied with the requested limit. Whole-set occurrence acquisition has its separate 50,000-row bound. |
+| `PBDB_CLAMP_LIMITS` | `pbdbClampLimits` | optional | `true` | Serve over-ceiling requests at the effective inline cap. When false, validation rejects requests above 10,000. |
 | `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED` | `dataframeDropEnabled` | optional | `false` | Set to `true` to list `paleobiology_dataframe_drop` (DataCanvas must also be on). Off by default — the tool registers through `disabledTool()`, so it's absent from `tools/list` unless opted in. The barrel reads only this field at module load (a non-throwing `safeParse`); the full server config is parsed in `setup()`, so a bad value in any server env var fails startup behind the configuration banner. Use `z.stringbool()`, not `z.coerce.boolean()`. |
 | `CANVAS_PROVIDER_TYPE` | (framework) | optional | `duckdb` | DataCanvas, defaulted by `src/config/canvas-default.ts` (the entry point's first import, since the tool barrel reads it at load). When `none`, `paleobiology_search_occurrences` returns its inline preview only (no usable `canvas_id`) and the `dataframe_*` tools are left off `tools/list` (shown as disabled on the HTTP landing page). |
 
@@ -344,9 +341,8 @@ Each step is independently buildable + testable.
 1. **Config + server identity.** `server-config.ts` (Zod schema, env mapping); set
    `createApp()` `name`/`title` to `paleobiology-mcp-server`, add CC-BY attribution +
    modern-vs-paleo-coords guidance to `instructions`. Remove echo definitions.
-2. **`IntervalIndex` + bundled snapshot.** Generate `ics-time-scale.json` from PBDB
-   `/intervals/list?scale_id=1` once; record the ICS version and generation date in the file's
-   top-level metadata (e.g. `{ "ics_version": "2023/09", "generated": "2025-01-01", "intervals": [...] }`);
+2. **`IntervalIndex` + bundled snapshot.** Generate `src/services/intervals/time-scale-data.ts` from PBDB
+   `/intervals/list?scale_id=1` and record the source and retrieval date. Then
    build the index + `paleobiology_list_intervals` (no upstream dep — fastest to land and
    test, and it's the temporal rosetta the rest leans on). Surface `snapshot_version` in the
    tool output.
@@ -441,9 +437,9 @@ combining their records; shared name text does not establish a shared taxonomic 
   to the present but does not resolve other selection-boundary effects.
 - **Interval windows require positive-duration overlap.** A window should not include an
   adjacent stage merely because their boundaries meet. Explicit point queries remain inclusive.
-- **Bundle the geologic time scale, query everything else live.** The ICS scale changes on a
-  years-long cadence and grounds every temporal filter, so it ships as a static snapshot
-  behind an in-memory index. Occurrences/taxa/diversity/collections are live. Chosen over
+- **Bundle PBDB’s international time scale.** PBDB uses these boundaries to filter occurrences and
+  bin diversity. The scale ships as a dated snapshot behind an in-memory index.
+  Occurrences/taxa/diversity/collections are live. Chosen over
   `MirrorService` because 171 intervals is far below that tier's ~10⁴-row floor. Every domain
   tool carries `openWorldHint: true` — the interval lookup included, since a name outside the
   bundled scale reaches PBDB; only the canvas-local `dataframe_*` tools are `false`.
@@ -521,7 +517,7 @@ combining their records; shared name text does not establish a shared taxonomic 
 ## Output Design Notes
 
 - **Caller-controlled inline pages.** Occurrence and collection searches return every served
-  row on both surfaces. `limit` accepts 1–10,000, defaults to 100, and is subject to
+  row on both surfaces. The requested `limit` defaults to 100. The served page is bounded by 10,000 and
   `PBDB_MAX_OCCURRENCES`; no byte budget cuts the page again. Dataframe queries likewise
   return every framework-provided row, preserving its row-cap disclosure and SQL
   `ORDER BY … LIMIT/OFFSET` continuation.
@@ -642,9 +638,9 @@ by baseline classification.
   diversity, skewed by collection effort, rock availability, and research attention — not true
   past diversity. The tool returns sampled-in-bin + range-through counts; interpretation is
   the agent's.
-- **The bundled time scale lags ICS revisions** until the snapshot is regenerated. Document
-  the snapshot's ICS version; refresh on ICS updates.
-- **Page and staging bounds.** Inline occurrence/collection pages accept up to 10,000 rows,
+- **Snapshot freshness.** Refresh from PBDB’s `scale_id=1` when its boundaries change and record
+  the retrieval date so callers can cite the boundaries used.
+- **Page and staging bounds.** Inline occurrence/collection pages serve up to 10,000 rows,
   subject to `PBDB_MAX_OCCURRENCES`. Whole-set occurrence staging stops at 50,000 and reports
   partial coverage when more matches exist. Page through with `limit`/`offset` or narrow the
   matching set before aggregating. Collections are paged inline and never staged.
@@ -671,7 +667,7 @@ by baseline classification.
   default off).
 - 3 resources: `paleobiology://occurrence/{occurrence_no}`,
   `paleobiology://taxon/{taxon_no}`, `paleobiology://reference/{reference_no}`.
-- `vocab=pbdb` normalization; modern + paleo coords; named-interval ↔ Ma echoing; bundled ICS
+- `vocab=pbdb` normalization; modern + paleo coords; named-interval ↔ Ma echoing; bundled PBDB international
   time-scale snapshot; CC-BY attribution; DataCanvas spill for `paleobiology_search_occurrences`
   only (diversity + collections return inline per the earns-its-keep gate); graceful
   degradation when canvas is disabled.

@@ -2,12 +2,12 @@
 
 **Server:** paleobiology-mcp-server
 **Version:** 0.5.0
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.18`
-**Engines:** Bun ≥1.4.0, Node ≥24.0.0
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.22`
+**Engines:** Bun ≥1.4.4, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/server` ^2.4.0
 **Zod:** ^4.6.7
 
-**Dependency hold:** Keep `@duckdb/node-api` on `^1.5.6-r.2` until [mcp-ts-core#800](https://github.com/cyanheads/mcp-ts-core/issues/800) ships: DuckDB 2 currently rejects supported `SHOW <table>` canvas queries.
+**Dependency hold:** Keep `@duckdb/node-api` on `^1.5.6-r.2` until a separate DuckDB 2 upgrade is verified. Framework 0.13.19 shipped the `SHOW <table>` compatibility fix ([mcp-ts-core#800](https://github.com/cyanheads/mcp-ts-core/issues/800)).
 
 > Fossil biodiversity over the Paleobiology Database (PBDB, paleobiodb.org/data1.2) —
 > keyless, CC BY 4.0. Six domain `paleobiology_*` tools, plus three dataframe tools listed
@@ -17,10 +17,10 @@
 > DataCanvas when it is on, read via `dataframe_describe` then `dataframe_query`, freed via the
 > opt-in `dataframe_drop`), `get_diversity` (origination/extinction curve through time),
 > `search_collections` (fossil localities), `get_references` (row `reference_no` →
-> citation, batched), and `list_intervals` (the bundled ICS geologic
+> citation, batched), and `list_intervals` (PBDB’s bundled international geologic
 > time scale — offline, with a PBDB fallback for sub-stage and regional names outside it).
 > No auth, no API key. Domain env vars: `PBDB_BASE_URL`,
-> `PBDB_TIMEOUT_MS`, `PBDB_MAX_OCCURRENCES`, `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED`.
+> `PBDB_TIMEOUT_MS`, `PBDB_MAX_OCCURRENCES`, `PBDB_CLAMP_LIMITS`, `PALEOBIOLOGY_DATAFRAME_DROP_ENABLED`.
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
@@ -171,6 +171,7 @@ const ServerConfigSchema = z.object({
   pbdbBaseUrl: z.string().url().default('https://paleobiodb.org/data1.2').describe('Base URL for the PBDB REST API (no trailing slash).'),
   pbdbTimeoutMs: z.coerce.number().int().positive().default(30_000).describe('Per-request timeout in ms for PBDB calls.'),
   pbdbMaxOccurrences: z.coerce.number().int().positive().default(1000).describe('Inline occurrence/collection page cap. Whole-set occurrence staging has a separate 50,000-row bound.'),
+  pbdbClampLimits: z.stringbool().default(true).describe('Serve an over-ceiling limit at the effective inline cap.'),
   dataframeDropEnabled: z.stringbool().default(false).describe('When true, enables paleobiology_dataframe_drop (DataCanvas must also be on). Off by default.'),
 });
 
@@ -178,6 +179,7 @@ const ENV_MAP = {
   pbdbBaseUrl: 'PBDB_BASE_URL',
   pbdbTimeoutMs: 'PBDB_TIMEOUT_MS',
   pbdbMaxOccurrences: 'PBDB_MAX_OCCURRENCES',
+  pbdbClampLimits: 'PBDB_CLAMP_LIMITS',
   dataframeDropEnabled: 'PALEOBIOLOGY_DATAFRAME_DROP_ENABLED',
 } as const;
 
